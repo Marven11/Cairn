@@ -15,6 +15,25 @@ def client(tmp_path, monkeypatch) -> TestClient:
         yield test_client
 
 
+class MutableClock:
+    def __init__(self, now: str) -> None:
+        self.now = now
+
+    def __call__(self) -> str:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch) -> MutableClock:
+    from cairn.server import services
+    from cairn.server.routers import hints, intents, projects
+
+    clock = MutableClock("2026-01-01T00:00:00Z")
+    for module in (services, hints, intents, projects):
+        monkeypatch.setattr(module, "utcnow", clock)
+    return clock
+
+
 def _create_project(client: TestClient) -> str:
     response = client.post(
         "/projects",
@@ -207,3 +226,93 @@ def test_project_creation_rejects_invalid_bootstrap_enabled(client: TestClient) 
     )
 
     assert response.status_code == 422
+
+
+def test_list_projects_sorts_by_most_recent_activity(
+    client: TestClient, clock: MutableClock
+) -> None:
+    clock.now = "2026-01-01T00:00:00Z"
+    older = _create_project(client)
+    clock.now = "2026-01-02T00:00:00Z"
+    newer = _create_project(client)
+
+    projects = client.get("/projects").json()
+    assert [p["id"] for p in projects] == [newer, older]
+    assert [p["last_activity_at"] for p in projects] == [
+        "2026-01-02T00:00:00Z",
+        "2026-01-01T00:00:00Z",
+    ]
+
+    clock.now = "2026-01-03T00:00:00Z"
+    assert client.post(
+        f"/projects/{older}/hints",
+        json={"content": "later clue", "creator": "human"},
+    ).status_code == 201
+    projects = client.get("/projects").json()
+    assert [p["id"] for p in projects] == [older, newer]
+    assert projects[0]["last_activity_at"] == "2026-01-03T00:00:00Z"
+
+    clock.now = "2026-01-04T00:00:00Z"
+    assert client.post(
+        f"/projects/{newer}/intents",
+        json={
+            "from": ["origin"],
+            "description": "explore",
+            "creator": "worker-a",
+            "worker": "worker-a",
+        },
+    ).status_code == 201
+    projects = client.get("/projects").json()
+    assert [p["id"] for p in projects] == [newer, older]
+    assert projects[0]["last_activity_at"] == "2026-01-04T00:00:00Z"
+
+    clock.now = "2026-01-05T00:00:00Z"
+    assert client.post(
+        f"/projects/{newer}/intents/i001/conclude",
+        json={"worker": "worker-a", "description": "found"},
+    ).status_code == 200
+    projects = client.get("/projects").json()
+    assert [p["id"] for p in projects] == [newer, older]
+    assert projects[0]["last_activity_at"] == "2026-01-05T00:00:00Z"
+
+
+def test_list_projects_ties_break_on_newest_creation(
+    client: TestClient, clock: MutableClock
+) -> None:
+    clock.now = "2026-01-01T00:00:00Z"
+    first = _create_project(client)
+    second = _create_project(client)
+
+    projects = client.get("/projects").json()
+    assert [p["id"] for p in projects] == [second, first]
+
+
+def test_worker_heartbeats_do_not_count_as_project_activity(
+    client: TestClient, clock: MutableClock
+) -> None:
+    clock.now = "2026-01-01T00:00:00Z"
+    project_id = _create_project(client)
+    clock.now = "2026-01-02T00:00:00Z"
+    assert client.post(
+        f"/projects/{project_id}/intents",
+        json={
+            "from": ["origin"],
+            "description": "explore",
+            "creator": "worker-a",
+            "worker": "worker-a",
+        },
+    ).status_code == 201
+    clock.now = "2026-01-03T00:00:00Z"
+    assert client.post(
+        f"/projects/{project_id}/intents/i001/heartbeat",
+        json={"worker": "worker-a"},
+    ).status_code == 200
+    clock.now = "2026-01-04T00:00:00Z"
+    assert client.post(
+        f"/projects/{project_id}/reason/claim",
+        json={"worker": "worker-a", "trigger": "new_facts"},
+    ).status_code == 200
+
+    projects = client.get("/projects").json()
+    assert projects[0]["last_activity_at"] == "2026-01-02T00:00:00Z"
+

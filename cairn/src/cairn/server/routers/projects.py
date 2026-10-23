@@ -46,15 +46,31 @@ def list_projects():
     with get_conn() as conn:
         expire_workers(conn)
         expire_reason_leases(conn)
+        # Last activity is the latest durable graph event; worker heartbeats are coordination, not activity.
         rows = conn.execute("""
+            WITH project_activity AS (
+                SELECT project_id, MAX(occurred_at) AS last_activity_at
+                FROM (
+                    SELECT id AS project_id, created_at AS occurred_at FROM projects
+                    UNION ALL
+                    SELECT project_id, created_at FROM hints
+                    UNION ALL
+                    SELECT project_id, created_at FROM intents
+                    UNION ALL
+                    SELECT project_id, concluded_at FROM intents WHERE concluded_at IS NOT NULL
+                )
+                GROUP BY project_id
+            )
             SELECT p.*,
+                activity.last_activity_at,
                 (SELECT COUNT(*) FROM facts WHERE project_id = p.id) AS fact_count,
                 (SELECT COUNT(*) FROM intents WHERE project_id = p.id) AS intent_count,
                 (SELECT COUNT(*) FROM intents WHERE project_id = p.id AND concluded_at IS NULL AND worker IS NOT NULL) AS working_intent_count,
                 (SELECT COUNT(*) FROM intents WHERE project_id = p.id AND concluded_at IS NULL AND worker IS NULL) AS unclaimed_intent_count,
                 (SELECT COUNT(*) FROM hints WHERE project_id = p.id) AS hint_count
             FROM projects p
-            ORDER BY p.created_at
+            JOIN project_activity AS activity ON activity.project_id = p.id
+            ORDER BY activity.last_activity_at DESC, p.rowid DESC
         """).fetchall()
         return [
             ProjectSummary(
@@ -63,6 +79,7 @@ def list_projects():
                 status=row["status"],
                 bootstrap_enabled=bool(row["bootstrap_enabled"]),
                 created_at=row["created_at"],
+                last_activity_at=row["last_activity_at"],
                 reason=project_reason_from_row(row),
                 fact_count=row["fact_count"],
                 intent_count=row["intent_count"],

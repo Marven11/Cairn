@@ -32,6 +32,7 @@ def _summary(project_id: str, status: str) -> ProjectSummary:
         status=status,
         bootstrap_enabled=True,
         created_at="2026-01-01T00:00:00Z",
+        last_activity_at="2026-01-01T00:00:00Z",
         fact_count=2,
         intent_count=0,
         working_intent_count=0,

@@ -212,7 +212,7 @@ Body：
 
 #### GET /projects
 
-返回所有项目列表，含元信息和统计摘要，不含图数据。
+返回所有项目列表，含元信息和统计摘要，不含图数据。结果按 `last_activity_at` 从新到旧排序；该时间取项目创建、Hint 添加、Intent 声明和 Intent 结论中最近的一次。协调状态（reason claim/heartbeat）和项目元数据（标题、状态）的修改不计入活动时间。
 
 响应：
 
@@ -230,6 +230,7 @@ Body：
       "started_at": "2026-03-21T10:06:00Z",
       "last_heartbeat_at": "2026-03-21T10:06:03Z"
     },
+    "last_activity_at": "2026-03-21T10:03:00Z",
     "fact_count": 8,
     "intent_count": 5,
     "working_intent_count": 2,

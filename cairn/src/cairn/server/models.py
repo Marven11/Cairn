@@ -53,6 +53,7 @@ class ProjectMeta(BaseModel):
 
 
 class ProjectSummary(ProjectMeta):
+    last_activity_at: str
     fact_count: int
     intent_count: int
     working_intent_count: int
