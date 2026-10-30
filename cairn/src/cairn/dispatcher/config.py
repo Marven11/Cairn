@@ -38,20 +38,20 @@ WORKER_ENV_KEYS: dict[WorkerType, tuple[str, ...]] = {
 }
 
 DEFAULT_PROMPT_REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
-    "reason.md": ("{graph_yaml}", "{fact_ids}", "{open_intents}", "{max_intents}"),
+    "reason.md": ("{graph_yaml}", "{fact_ids}", "{open_intents}", "{open_goals}", "{max_intents}"),
     "explore.md": ("{graph_yaml}", "{intent_id}", "{intent_description}"),
     "explore_conclude.md": ("{graph_yaml}", "{intent_id}", "{intent_description}"),
-    "bootstrap.md": ("{origin}", "{goal}", "{hints}"),
-    "bootstrap_conclude.md": ("{origin}", "{goal}", "{hints}"),
+    "bootstrap.md": ("{origin}", "{goals}", "{hints}"),
+    "bootstrap_conclude.md": ("{origin}", "{goals}", "{hints}"),
 }
 
 PROMPT_REQUIRED_TOKENS_BY_GROUP: dict[str, dict[str, tuple[str, ...]]] = {
     "mock": {
-        "reason.md": ("{fact_ids}", "{open_intents}", "{max_intents}"),
+        "reason.md": ("{fact_ids}", "{open_intents}", "{goal_ids}", "{max_intents}"),
         "explore.md": ("{intent_id}",),
         "explore_conclude.md": ("{intent_id}",),
-        "bootstrap.md": ("{origin}", "{goal}", "{hints}"),
-        "bootstrap_conclude.md": ("{origin}", "{goal}", "{hints}"),
+        "bootstrap.md": ("{origin}", "{goals}", "{hints}"),
+        "bootstrap_conclude.md": ("{origin}", "{goals}", "{hints}"),
     }
 }
 

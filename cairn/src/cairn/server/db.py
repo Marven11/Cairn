@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS projects (
     status TEXT NOT NULL DEFAULT 'active',
     bootstrap_enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
+    completed_at TEXT,
+    completed_by_intent TEXT,
     reason_worker TEXT,
     reason_trigger TEXT,
     reason_started_at TEXT,
@@ -33,13 +35,14 @@ CREATE TABLE IF NOT EXISTS facts (
     id TEXT NOT NULL,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     description TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    creator TEXT,
     PRIMARY KEY (id, project_id)
 );
 
 CREATE TABLE IF NOT EXISTS intents (
     id TEXT NOT NULL,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    to_fact_id TEXT,
     description TEXT NOT NULL,
     creator TEXT NOT NULL,
     worker TEXT,
@@ -50,6 +53,14 @@ CREATE TABLE IF NOT EXISTS intents (
 );
 
 CREATE TABLE IF NOT EXISTS intent_sources (
+    intent_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    fact_id TEXT NOT NULL,
+    PRIMARY KEY (intent_id, project_id, fact_id),
+    FOREIGN KEY (intent_id, project_id) REFERENCES intents(id, project_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS intent_targets (
     intent_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
     fact_id TEXT NOT NULL,
@@ -89,18 +100,23 @@ def configure(path: Path) -> None:
     _db_path = path
     _db_path.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
+        _reject_legacy_schema(conn)
         conn.executescript(SCHEMA)
-        _ensure_project_columns(conn)
 
 
-def _ensure_project_columns(conn: sqlite3.Connection) -> None:
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
-    if "bootstrap_enabled" not in columns:
-        conn.execute("ALTER TABLE projects ADD COLUMN bootstrap_enabled INTEGER NOT NULL DEFAULT 1")
-        if "bootstrap_mode" in columns:
-            conn.execute(
-                "UPDATE projects SET bootstrap_enabled = CASE WHEN bootstrap_mode = 'disabled' THEN 0 ELSE 1 END"
-            )
+def _reject_legacy_schema(conn: sqlite3.Connection) -> None:
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "facts" not in tables:
+        return
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(facts)")}
+    if "created_at" not in columns:
+        raise RuntimeError(
+            "database uses the legacy single-goal schema; convert it first with: "
+            "cairn migrate-db --db-path <old.db> --target <new.db>"
+        )
 
 
 @contextmanager

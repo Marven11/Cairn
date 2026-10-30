@@ -6,11 +6,13 @@ import pytest
 
 from cairn.dispatcher.contracts import (
     parse_json_output,
+    validate_bootstrap_execute_payload,
     validate_explore_payload,
     validate_reason_payload,
 )
 from cairn.dispatcher.runtime.process import ManagedProcess
 from cairn.dispatcher.workers.adapters.pi import PiDriver
+from cairn.server.models import CreateIntentRequest
 
 
 def test_parse_json_output_extracts_object_from_markdown_noise() -> None:
@@ -45,6 +47,72 @@ def test_reason_payload_requires_intent_when_none_are_open() -> None:
             {"accepted": True, "data": {}},
             open_intents_empty=True,
             max_intents=3,
+        )
+
+
+def test_reason_payload_complete_normalizes_goals() -> None:
+    kind, complete = validate_reason_payload(
+        {
+            "accepted": True,
+            "data": {
+                "complete": {"from": ["f001"], "goals": [" g001", "g001"], "description": "done"}
+            },
+        },
+        open_intents_empty=False,
+        max_intents=3,
+    )
+
+    assert kind == "complete"
+    assert complete["goals"] == ["g001"]
+
+
+def test_intent_payload_deduplicates_from_ids() -> None:
+    request = CreateIntentRequest.model_validate(
+        {"from": ["origin", " origin"], "description": "d", "creator": "c"}
+    )
+
+    assert request.from_ == ["origin"]
+
+
+def test_reason_payload_complete_rejects_empty_goals_list() -> None:
+    with pytest.raises(ValueError, match="goals"):
+        validate_reason_payload(
+            {
+                "accepted": True,
+                "data": {
+                    "complete": {"from": ["f001"], "goals": [], "description": "done"}
+                },
+            },
+            open_intents_empty=False,
+            max_intents=3,
+        )
+
+
+def test_bootstrap_payload_complete_normalizes_goals() -> None:
+    kind, result = validate_bootstrap_execute_payload(
+        {
+            "accepted": True,
+            "data": {
+                "fact": {"description": "found"},
+                "complete": {"goals": ["g001"], "description": "met"},
+            },
+        }
+    )
+
+    assert kind == "complete"
+    assert result["complete_goals"] == ["g001"]
+
+
+def test_bootstrap_payload_complete_goals_are_required() -> None:
+    with pytest.raises(ValueError, match="goals"):
+        validate_bootstrap_execute_payload(
+            {
+                "accepted": True,
+                "data": {
+                    "fact": {"description": "found"},
+                    "complete": {"description": "met"},
+                },
+            }
         )
 
 

@@ -1,21 +1,43 @@
 from __future__ import annotations
 
 import logging
-import time
 import uuid
 from dataclasses import dataclass
 
 from cairn.dispatcher.config import DispatchConfig, WorkerConfig
+from cairn.dispatcher.prompting import format_json_block
 from cairn.dispatcher.protocol.client import CairnClient
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.runtime.process import ProcessResult
+from cairn.server.models import ProjectDetail, is_goal_id
 
 PROCESS_COMMUNICATE_GRACE_SECONDS = 15
 LOG_PREVIEW_LIMIT = 1200
 GRAPH_SNAPSHOT_ROOT = "/tmp/cairn-prompts"
 LOG = logging.getLogger(__name__)
+
+
+def completed_goal_ids(project: ProjectDetail) -> set[str]:
+    completed: set[str] = set()
+    for intent in project.intents:
+        completed.update(target for target in intent.to if is_goal_id(target))
+    return completed
+
+
+def format_goals_block(project: ProjectDetail) -> str:
+    completed = completed_goal_ids(project)
+    goals = [
+        {
+            "id": fact.id,
+            "description": fact.description,
+            "status": "completed" if fact.id in completed else "open",
+        }
+        for fact in project.facts
+        if is_goal_id(fact.id)
+    ]
+    return format_json_block(goals)
 
 
 @dataclass(slots=True)
@@ -176,7 +198,12 @@ def write_conclude_result_with_fact_id(
     phase_ms: int,
     total_ms: int | None = None,
 ) -> ConcludeWriteResult:
-    response = client.conclude(project_id, intent_id, worker_name, description)
+    response = client.conclude(
+        project_id,
+        intent_id,
+        worker_name,
+        description,
+    )
     if response.ok:
         fact_id: str | None = None
         if isinstance(response.data, dict):

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
-from cairn.server.models import Intent, ProjectMeta, ProjectReason
+from cairn.server.models import Intent, ProjectMeta, ProjectReason, is_goal_id
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -48,6 +50,10 @@ def next_hint_id(conn: sqlite3.Connection, project_id: str) -> str:
     return _next_scoped_id(conn, "hint", "h", project_id)
 
 
+def next_goal_id(conn: sqlite3.Connection, project_id: str) -> str:
+    return _next_scoped_id(conn, "goal", "g", project_id)
+
+
 def get_project_or_404(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     if row is None:
@@ -69,13 +75,6 @@ def check_project_hint_writable(conn: sqlite3.Connection, project_id: str) -> sq
     return row
 
 
-def check_project_completed(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:
-    row = get_project_or_404(conn, project_id)
-    if row["status"] != "completed":
-        raise HTTPException(403, f"Project is {row['status']}")
-    return row
-
-
 def validate_facts_exist(
     conn: sqlite3.Connection, project_id: str, fact_ids: list[str]
 ) -> None:
@@ -87,9 +86,90 @@ def validate_facts_exist(
             raise HTTPException(404, f"Fact {fid} not found")
 
 
-def validate_goal_not_in_sources(fact_ids: list[str]) -> None:
-    if "goal" in fact_ids:
-        raise HTTPException(400, "goal cannot be used in from")
+def get_goal_fact_rows(conn: sqlite3.Connection, project_id: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT * FROM facts
+        WHERE project_id = ? AND id GLOB 'g[0-9]*'
+        ORDER BY created_at, rowid
+        """,
+        (project_id,),
+    ).fetchall()
+
+
+def get_completed_goal_ids(conn: sqlite3.Connection, project_id: str) -> set[str]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT t.fact_id AS fact_id
+        FROM intent_targets t
+        JOIN facts f ON f.id = t.fact_id AND f.project_id = t.project_id
+        WHERE t.project_id = ? AND f.id GLOB 'g[0-9]*'
+        """,
+        (project_id,),
+    ).fetchall()
+    return {row["fact_id"] for row in rows}
+
+
+def all_goals_completed(conn: sqlite3.Connection, project_id: str) -> bool:
+    goal_rows = get_goal_fact_rows(conn, project_id)
+    completed = get_completed_goal_ids(conn, project_id)
+    return all(row["id"] in completed for row in goal_rows)
+
+
+def complete_project_if_all_goals_done(
+    conn: sqlite3.Connection, project_id: str, completed_at: str, completed_by_intent: str
+) -> None:
+    if not all_goals_completed(conn, project_id):
+        return
+    row = conn.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
+    assert row is not None
+    if row["status"] == "completed":
+        return
+    clear_project_reason(conn, project_id)
+    conn.execute(
+        "UPDATE projects SET status = 'completed', completed_at = ?, completed_by_intent = ? WHERE id = ?",
+        (completed_at, completed_by_intent, project_id),
+    )
+
+
+def reopen_project_if_completed(conn: sqlite3.Connection, project_id: str) -> None:
+    row = conn.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
+    assert row is not None
+    if row["status"] != "completed":
+        return
+    clear_project_reason(conn, project_id)
+    conn.execute(
+        "UPDATE projects SET status = 'active', completed_at = NULL, completed_by_intent = NULL WHERE id = ?",
+        (project_id,),
+    )
+
+
+def validate_goals_for_completion(
+    conn: sqlite3.Connection,
+    project_id: str,
+    goal_ids: list[str],
+    source_ids: Sequence[str] = (),
+) -> None:
+    sources = set(source_ids)
+    goal_rows = {row["id"]: row for row in get_goal_fact_rows(conn, project_id)}
+    completed = get_completed_goal_ids(conn, project_id)
+    if goal_ids:
+        # only calls that actually declare completions are constrained to
+        # evidence backed by facts or already-completed goals; an intent may
+        # still originate from an open goal as a direction of exploration
+        for sid in sources:
+            if is_goal_id(sid) and sid not in completed:
+                raise HTTPException(
+                    409, f"Goal {sid} is not completed and cannot be used as completion evidence"
+                )
+    for gid in goal_ids:
+        row = goal_rows.get(gid)
+        if row is None:
+            raise HTTPException(404, f"Goal {gid} not found")
+        if gid in sources:
+            raise HTTPException(409, f"Goal {gid} cannot be both a source and a completion of the same intent")
+        if gid in completed:
+            raise HTTPException(409, f"Goal {gid} is already completed")
 
 
 def validate_intent_creator_worker(creator: str, worker: str | None) -> None:
@@ -114,7 +194,7 @@ def get_claimable_open_intent_or_404(
 ) -> sqlite3.Row:
     expire_workers(conn, project_id)
     row = get_intent_or_404(conn, project_id, intent_id)
-    if row["to_fact_id"] is not None:
+    if row["concluded_at"] is not None:
         raise HTTPException(409, "Intent already concluded")
     if row["worker"] is not None and row["worker"] != worker:
         raise HTTPException(409, f"Intent is currently claimed by {row['worker']}")
@@ -126,7 +206,7 @@ def get_releasable_open_intent_or_404(
 ) -> sqlite3.Row:
     expire_workers(conn, project_id)
     row = get_intent_or_404(conn, project_id, intent_id)
-    if row["to_fact_id"] is not None:
+    if row["concluded_at"] is not None:
         raise HTTPException(409, "Intent already concluded")
     if row["worker"] is None:
         return row
@@ -135,27 +215,19 @@ def get_releasable_open_intent_or_404(
     return row
 
 
-def get_completion_intent_or_409(conn: sqlite3.Connection, project_id: str) -> sqlite3.Row:
-    rows = conn.execute(
-        "SELECT * FROM intents WHERE project_id = ? AND to_fact_id = 'goal'",
-        (project_id,),
-    ).fetchall()
-    if not rows:
-        raise HTTPException(409, "Completed project is missing its completion intent")
-    if len(rows) != 1:
-        raise HTTPException(409, "Completed project has multiple completion intents")
-    return rows[0]
-
-
 def intent_to_model(conn: sqlite3.Connection, row: sqlite3.Row, project_id: str) -> Intent:
     sources = conn.execute(
         "SELECT fact_id FROM intent_sources WHERE intent_id = ? AND project_id = ? ORDER BY rowid",
         (row["id"], project_id),
     ).fetchall()
+    targets = conn.execute(
+        "SELECT fact_id FROM intent_targets WHERE intent_id = ? AND project_id = ? ORDER BY rowid",
+        (row["id"], project_id),
+    ).fetchall()
     return Intent(
         id=row["id"],
         **{"from": [s["fact_id"] for s in sources]},
-        to=row["to_fact_id"],
+        to=[t["fact_id"] for t in targets],
         description=row["description"],
         creator=row["creator"],
         worker=row["worker"],
@@ -201,6 +273,8 @@ def project_meta_from_row(row: sqlite3.Row) -> ProjectMeta:
         status=row["status"],
         bootstrap_enabled=bool(row["bootstrap_enabled"]),
         created_at=row["created_at"],
+        completed_at=row["completed_at"],
+        completed_by_intent=row["completed_by_intent"],
         reason=project_reason_from_row(row),
     )
 
@@ -225,10 +299,10 @@ def expire_workers(conn: sqlite3.Connection, project_id: str | None = None) -> N
     query = """
         UPDATE intents
         SET worker = NULL
-        WHERE to_fact_id IS NULL
-          AND worker IS NOT NULL
+        WHERE worker IS NOT NULL
           AND last_heartbeat_at IS NOT NULL
           AND (julianday(?) - julianday(last_heartbeat_at)) * 86400 > ?
+          AND concluded_at IS NULL
     """
     params: tuple = (now, timeout)
     if project_id is not None:

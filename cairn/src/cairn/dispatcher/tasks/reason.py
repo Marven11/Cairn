@@ -7,6 +7,7 @@ from cairn.dispatcher.config import DispatchConfig, WorkerConfig
 from cairn.dispatcher.contracts import parse_json_output, validate_reason_payload
 from cairn.dispatcher.prompting import (
     format_fact_ids,
+    format_json_block,
     format_open_intents,
     load_prompt,
     render_prompt,
@@ -18,6 +19,7 @@ from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.tasks.common import (
     best_effort_release_reason,
     cancel_reason,
+    completed_goal_ids,
     did_timeout,
     preview,
     run_worker_process,
@@ -25,7 +27,7 @@ from cairn.dispatcher.tasks.common import (
     write_graph_snapshot_reference,
 )
 from cairn.dispatcher.workers.registry import get_driver
-from cairn.server.models import ProjectDetail
+from cairn.server.models import ProjectDetail, is_goal_id
 
 LOG = logging.getLogger(__name__)
 
@@ -88,17 +90,25 @@ def run_reason_task(
                 "worker": intent.worker,
             }
             for intent in project.intents
-            if intent.to is None
+            if not intent.to
         ]
-        allowed_fact_ids = [fact.id for fact in project.facts if fact.id != "goal"]
+        allowed_fact_ids = [fact.id for fact in project.facts]
+        completed_goals = completed_goal_ids(project)
+        open_goals = [
+            {"id": fact.id, "description": fact.description}
+            for fact in project.facts
+            if is_goal_id(fact.id) and fact.id not in completed_goals
+        ]
+        open_goal_id_set = {goal["id"] for goal in open_goals}
         LOG.debug(
-            "reason context prepared project=%s worker=%s facts=%s allowed_fact_ids=%s hints=%s open_intents=%s",
+            "reason context prepared project=%s worker=%s facts=%s allowed_fact_ids=%s hints=%s open_intents=%s open_goals=%s",
             project.project.id,
             worker.name,
             len(project.facts),
             len(allowed_fact_ids),
             len(project.hints),
             len(open_intents),
+            len(open_goals),
         )
         prompt = render_prompt(
             load_prompt(config.runtime.prompt_group, "reason.md"),
@@ -111,6 +121,8 @@ def run_reason_task(
                 ),
                 "fact_ids": format_fact_ids(allowed_fact_ids),
                 "open_intents": format_open_intents(open_intents),
+                "open_goals": format_json_block(open_goals),
+                "goal_ids": format_fact_ids([goal["id"] for goal in open_goals]),
                 "max_intents": str(config.tasks.reason.max_intents),
             },
         )
@@ -202,7 +214,24 @@ def run_reason_task(
             )
             return "rejected"
         if kind == "complete":
-            response = client.complete(project.project.id, data["from"], data["description"], worker.name)
+            claimed_goals = data["goals"]
+            unknown = [gid for gid in claimed_goals if gid not in open_goal_id_set]
+            if unknown:
+                LOG.warning(
+                    "reason complete referenced non-open goals project=%s worker=%s goals=%s open_goals=%s",
+                    project.project.id,
+                    worker.name,
+                    unknown,
+                    sorted(open_goal_id_set),
+                )
+                return "failed"
+            response = client.complete(
+                project.project.id,
+                data["from"],
+                data["description"],
+                worker.name,
+                goals=claimed_goals,
+            )
             if response.status_code == 403:
                 LOG.info("project became inactive during reason complete project=%s worker=%s", project.project.id, worker.name)
                 return "success"
@@ -216,13 +245,23 @@ def run_reason_task(
                 )
                 return "failed"
             LOG.info(
-                "project completed project=%s worker=%s from=%s execute_ms=%s total_ms=%s",
+                "reason complete accepted project=%s worker=%s from=%s goals=%s execute_ms=%s total_ms=%s",
                 project.project.id,
                 worker.name,
                 data["from"],
+                claimed_goals,
                 execute_ms,
                 total_ms,
             )
+            response_project = response.data.get("project") if isinstance(response.data, dict) else None
+            if isinstance(response_project, dict) and response_project.get("status") == "completed":
+                LOG.info(
+                    "project completed project=%s worker=%s execute_ms=%s total_ms=%s",
+                    project.project.id,
+                    worker.name,
+                    execute_ms,
+                    total_ms,
+                )
             return "success"
         if kind == "intents":
             created = 0

@@ -22,7 +22,7 @@ from cairn.dispatcher.workers.registry import get_driver
 from cairn.dispatcher.tasks.bootstrap import run_bootstrap_task
 from cairn.dispatcher.tasks.explore import run_explore_task
 from cairn.dispatcher.tasks.reason import run_reason_task
-from cairn.server.models import Intent, ProjectDetail, ProjectSummary
+from cairn.server.models import Intent, ProjectDetail, ProjectSummary, is_goal_id
 
 LOG = logging.getLogger(__name__)
 UNHEALTHY_RETRY_AFTER_SECONDS = 5
@@ -299,7 +299,7 @@ class DispatcherLoop:
         unclaimed_intents = [
             intent
             for intent in project.intents
-            if intent.to is None
+            if not intent.to
             and intent.worker is None
             and intent.id not in running_intent_ids
             and not self._is_bootstrap_intent(intent)
@@ -642,14 +642,14 @@ class DispatcherLoop:
         return len(self.runtime_project_ids & active_ids)
 
     def _project_open_intent_count(self, project: ProjectDetail) -> int:
-        return sum(1 for intent in project.intents if intent.to is None)
+        return sum(1 for intent in project.intents if not intent.to)
 
     def _is_bootstrap_intent(self, intent: Intent) -> bool:
         return (
             intent.description == BOOTSTRAP_INTENT_DESCRIPTION
             and intent.creator == BOOTSTRAP_INTENT_CREATOR
             and intent.from_ == ["origin"]
-            and intent.to is None
+            and not intent.to
         )
 
     def _get_bootstrap_intent(self, project: ProjectDetail) -> Intent | None:
@@ -662,8 +662,7 @@ class DispatcherLoop:
         return intents[0]
 
     def _is_initial_project(self, project: ProjectDetail) -> bool:
-        fact_ids = {fact.id for fact in project.facts}
-        if fact_ids != {"origin", "goal"} or len(project.facts) != 2:
+        if any(not is_goal_id(fact.id) and fact.id != "origin" for fact in project.facts):
             return False
         if not project.intents:
             return True

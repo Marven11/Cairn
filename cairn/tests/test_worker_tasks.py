@@ -155,7 +155,7 @@ def test_bootstrap_success_concludes_fact_then_completes_project(monkeypatch) ->
         lambda *_args, **_kwargs: ProcessResult(
             0,
             '{"accepted":true,"data":{"fact":{"description":"solved"},'
-            '"complete":{"description":"goal met"}}}',
+            '"complete":{"goals":["g001"],"description":"goal met"}}}',
             "",
         ),
     )
@@ -194,7 +194,7 @@ def test_reason_complete_treats_inactive_project_as_success(monkeypatch) -> None
         "run_worker_process",
         lambda *_args, **_kwargs: ProcessResult(
             0,
-            '{"accepted":true,"data":{"complete":{"from":["f001"],"description":"done"}}}',
+            '{"accepted":true,"data":{"complete":{"from":["f001"],"goals":["g001"],"description":"done"}}}',
             "",
         ),
     )
@@ -211,6 +211,161 @@ def test_reason_complete_treats_inactive_project_as_success(monkeypatch) -> None
 
     assert outcome == "success"
     assert client.released_reasons == [("proj_001", "test-worker")]
+
+
+def test_reason_complete_passes_claimed_goals(monkeypatch) -> None:
+    config = make_config()
+    project = make_project()
+    client = FakeClient(project)
+    containers = FakeContainerManager()
+    lease = FakeLease()
+
+    captured: dict[str, object] = {}
+
+    def complete(_project_id, _from_ids, _description, _worker, goals=None) -> ApiResult:
+        captured["goals"] = goals
+        return ApiResult(200, {"project": {"status": "active"}})
+
+    client.complete = complete  # type: ignore[method-assign]
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: FakeDriver())
+    monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(lease))
+    monkeypatch.setattr(
+        reason,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"complete":{"from":["f001"],"goals":["g001"],"description":"done"}}}',
+            "",
+        ),
+    )
+
+    outcome = reason.run_reason_task(
+        config,
+        client,
+        containers,
+        project,
+        "graph",
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "success"
+    assert captured["goals"] == ["g001"]
+
+
+def test_reason_complete_rejects_non_open_goal_references(monkeypatch) -> None:
+    config = make_config()
+    project = make_project()
+    client = FakeClient(project)
+    containers = FakeContainerManager()
+    lease = FakeLease()
+
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: FakeDriver())
+    monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(lease))
+    monkeypatch.setattr(
+        reason,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"complete":{"from":["f001"],"goals":["g009"],"description":"done"}}}',
+            "",
+        ),
+    )
+
+    outcome = reason.run_reason_task(
+        config,
+        client,
+        containers,
+        project,
+        "graph",
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "failed"
+    assert client.completed == []
+
+
+def test_bootstrap_complete_without_goals_falls_back_to_conclude(monkeypatch) -> None:
+    config = make_config()
+    intent = make_intent()
+    project = make_project(intents=[intent])
+    client = FakeClient(project)
+    containers = FakeContainerManager()
+    driver = FakeDriver()
+    lease = FakeLease()
+
+    monkeypatch.setattr(bootstrap, "get_driver", lambda *_a, **_k: driver)
+    monkeypatch.setattr(bootstrap.HeartbeatLease, "for_intent", _lease_factory(lease))
+    monkeypatch.setattr(
+        bootstrap,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"fact":{"description":"solved"},'
+            '"complete":{"description":"all goals met"}}}',
+            "",
+        ),
+    )
+
+    outcome = bootstrap.run_bootstrap_task(
+        config,
+        client,
+        containers,
+        project,
+        intent,
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    # goals is required in the complete payload; without it the execute phase fails
+    # validation, the conclude fallback still writes the fact, and no complete is sent
+    assert outcome == "success"
+    assert client.completed == []
+    assert client.concluded == [("proj_001", "i001", "test-worker", "solved")]
+
+
+def test_bootstrap_complete_forwards_claimed_goals(monkeypatch) -> None:
+    config = make_config()
+    intent = make_intent()
+    project = make_project(intents=[intent])
+    client = FakeClient(project)
+    containers = FakeContainerManager()
+    driver = FakeDriver()
+    lease = FakeLease()
+
+    captured: dict[str, object] = {}
+
+    def complete(_project_id, _from_ids, _description, _worker, goals) -> ApiResult:
+        captured["goals"] = goals
+        return ApiResult(200, {})
+
+    client.complete = complete  # type: ignore[method-assign]
+    monkeypatch.setattr(bootstrap, "get_driver", lambda *_a, **_k: driver)
+    monkeypatch.setattr(bootstrap.HeartbeatLease, "for_intent", _lease_factory(lease))
+    monkeypatch.setattr(
+        bootstrap,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"fact":{"description":"solved"},'
+            '"complete":{"goals":["g001"],"description":"g001 met"}}}',
+            "",
+        ),
+    )
+
+    outcome = bootstrap.run_bootstrap_task(
+        config,
+        client,
+        containers,
+        project,
+        intent,
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "success"
+    assert captured["goals"] == ["g001"]
 
 
 def test_reason_startup_only_mode_skips_task_healthcheck(monkeypatch) -> None:

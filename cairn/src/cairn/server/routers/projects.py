@@ -3,39 +3,40 @@ from fastapi import APIRouter, HTTPException
 from cairn.server.db import get_conn
 from cairn.server.models import (
     CompleteRequest,
+    CompleteResponse,
+    CreateGoalRequest,
     CreateProjectRequest,
     Fact,
+    GoalResponse,
     Hint,
     HeartbeatRequest,
-    Intent,
     ProjectDetail,
     ProjectMeta,
     ProjectSummary,
-    ReopenRequest,
-    ReopenResponse,
     ReasonClaimRequest,
     UpdateProjectTitleRequest,
     UpdateProjectStatusRequest,
 )
 from cairn.server.services import (
     build_intents,
-    check_project_completed,
     check_project_active,
     clear_project_reason,
+    complete_project_if_all_goals_done,
     expire_reason_leases,
     expire_workers,
-    get_completion_intent_or_409,
     get_project_or_404,
     intent_to_model,
     next_fact_id,
+    next_goal_id,
     next_hint_id,
     next_intent_id,
     next_project_id,
     project_meta_from_row,
     project_reason_from_row,
+    reopen_project_if_completed,
     utcnow,
     validate_facts_exist,
-    validate_goal_not_in_sources,
+    validate_goals_for_completion,
 )
 
 router = APIRouter(tags=["projects"])
@@ -67,7 +68,11 @@ def list_projects():
                 (SELECT COUNT(*) FROM intents WHERE project_id = p.id) AS intent_count,
                 (SELECT COUNT(*) FROM intents WHERE project_id = p.id AND concluded_at IS NULL AND worker IS NOT NULL) AS working_intent_count,
                 (SELECT COUNT(*) FROM intents WHERE project_id = p.id AND concluded_at IS NULL AND worker IS NULL) AS unclaimed_intent_count,
-                (SELECT COUNT(*) FROM hints WHERE project_id = p.id) AS hint_count
+                (SELECT COUNT(*) FROM hints WHERE project_id = p.id) AS hint_count,
+                (SELECT COUNT(*) FROM facts WHERE project_id = p.id AND id GLOB 'g[0-9]*') AS goal_count,
+                (SELECT COUNT(DISTINCT t.fact_id) FROM intent_targets t
+                    JOIN facts f ON f.id = t.fact_id AND f.project_id = t.project_id
+                    WHERE t.project_id = p.id AND f.id GLOB 'g[0-9]*') AS completed_goal_count
             FROM projects p
             JOIN project_activity AS activity ON activity.project_id = p.id
             ORDER BY activity.last_activity_at DESC, p.rowid DESC
@@ -86,6 +91,10 @@ def list_projects():
                 working_intent_count=row["working_intent_count"],
                 unclaimed_intent_count=row["unclaimed_intent_count"],
                 hint_count=row["hint_count"],
+                goal_count=row["goal_count"],
+                completed_goal_count=row["completed_goal_count"],
+                completed_at=row["completed_at"],
+                completed_by_intent=row["completed_by_intent"],
             )
             for row in rows
         ]
@@ -102,12 +111,13 @@ def create_project(body: CreateProjectRequest):
             (pid, body.title, body.bootstrap_enabled, now),
         )
         conn.execute(
-            "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
-            ("origin", pid, body.origin),
+            "INSERT INTO facts (id, project_id, description, created_at, creator) VALUES (?, ?, ?, ?, ?)",
+            ("origin", pid, body.origin, now, None),
         )
+        goal_id = next_goal_id(conn, pid)
         conn.execute(
-            "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
-            ("goal", pid, body.goal),
+            "INSERT INTO facts (id, project_id, description, created_at, creator) VALUES (?, ?, ?, ?, ?)",
+            (goal_id, pid, body.goal, now, None),
         )
 
         hints = []
@@ -130,8 +140,8 @@ def create_project(body: CreateProjectRequest):
                 reason=None,
             ),
             facts=[
-                Fact(id="origin", description=body.origin),
-                Fact(id="goal", description=body.goal),
+                Fact(id="origin", description=body.origin, created_at=now, creator=None),
+                Fact(id=goal_id, description=body.goal, created_at=now, creator=None),
             ],
             intents=[],
             hints=hints,
@@ -146,7 +156,11 @@ def get_project(project_id: str):
         row = get_project_or_404(conn, project_id)
 
         facts = conn.execute(
-            "SELECT * FROM facts WHERE project_id = ?", (project_id,)
+            """
+            SELECT * FROM facts WHERE project_id = ?
+            ORDER BY created_at, rowid
+            """,
+            (project_id,),
         ).fetchall()
         hints = conn.execute(
             "SELECT * FROM hints WHERE project_id = ? ORDER BY created_at",
@@ -271,105 +285,69 @@ def release_project_reason(project_id: str, body: HeartbeatRequest):
         return project_meta_from_row(updated)
 
 
-@router.post("/projects/{project_id}/complete", response_model=Intent)
+@router.post("/projects/{project_id}/complete", response_model=CompleteResponse)
 def complete_project(project_id: str, body: CompleteRequest):
     with get_conn() as conn:
         check_project_active(conn, project_id)
         expire_reason_leases(conn, project_id)
         validate_facts_exist(conn, project_id, body.from_)
-        validate_goal_not_in_sources(body.from_)
+
+        goal_ids = body.goals
+        validate_goals_for_completion(conn, project_id, goal_ids, source_ids=body.from_)
 
         now = utcnow()
         iid = next_intent_id(conn, project_id)
+        fid = next_fact_id(conn, project_id)
 
         conn.execute(
-            "INSERT INTO intents (id, project_id, to_fact_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) VALUES (?, ?, 'goal', ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO intents (id, project_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (iid, project_id, body.description, body.worker, body.worker, now, now, now),
         )
-        for fid in body.from_:
+        for source_id in body.from_:
             conn.execute(
                 "INSERT INTO intent_sources (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
-                (iid, project_id, fid),
+                (iid, project_id, source_id),
             )
         conn.execute(
-            """
-            UPDATE projects
-            SET status = 'completed',
-                reason_worker = NULL,
-                reason_trigger = NULL,
-                reason_started_at = NULL,
-                reason_last_heartbeat_at = NULL
-            WHERE id = ?
-            """,
-            (project_id,),
+            "INSERT INTO facts (id, project_id, description, created_at, creator) VALUES (?, ?, ?, ?, ?)",
+            (fid, project_id, body.description, now, body.worker),
         )
-
-        return Intent(
-            id=iid,
-            **{"from": body.from_},
-            to="goal",
-            description=body.description,
-            creator=body.worker,
-            worker=body.worker,
-            last_heartbeat_at=now,
-            created_at=now,
-            concluded_at=now,
-        )
-
-
-@router.post("/projects/{project_id}/reopen", response_model=ReopenResponse)
-def reopen_project(project_id: str, body: ReopenRequest):
-    with get_conn() as conn:
-        expire_reason_leases(conn, project_id)
-        check_project_completed(conn, project_id)
-        completion = get_completion_intent_or_409(conn, project_id)
-
-        source_rows = conn.execute(
-            "SELECT fact_id FROM intent_sources WHERE intent_id = ? AND project_id = ? ORDER BY rowid",
-            (completion["id"], project_id),
-        ).fetchall()
-        source_ids = [row["fact_id"] for row in source_rows]
-        if not source_ids:
-            raise HTTPException(409, "Completion intent is missing its source facts")
-
-        now = utcnow()
-        fact_id = next_fact_id(conn, project_id)
-        intent_id = next_intent_id(conn, project_id)
-        description = body.description
-        creator = body.creator
-
-        conn.execute(
-            "DELETE FROM intents WHERE id = ? AND project_id = ?",
-            (completion["id"], project_id),
-        )
-        conn.execute(
-            "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
-            (fact_id, project_id, description),
-        )
-        conn.execute(
-            "INSERT INTO intents (id, project_id, to_fact_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (intent_id, project_id, fact_id, "external_feedback", creator, creator, now, now, now),
-        )
-        for source_id in source_ids:
+        for target_id in [fid, *goal_ids]:
             conn.execute(
-                "INSERT INTO intent_sources (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
-                (intent_id, project_id, source_id),
+                "INSERT INTO intent_targets (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
+                (iid, project_id, target_id),
             )
-        clear_project_reason(conn, project_id)
-        conn.execute(
-            "UPDATE projects SET status = 'active' WHERE id = ?",
-            (project_id,),
-        )
+        complete_project_if_all_goals_done(conn, project_id, now, iid)
 
         updated_project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         updated_intent = conn.execute(
             "SELECT * FROM intents WHERE id = ? AND project_id = ?",
-            (intent_id, project_id),
+            (iid, project_id),
         ).fetchone()
         assert updated_project is not None
         assert updated_intent is not None
-        return ReopenResponse(
+        return CompleteResponse(
             project=project_meta_from_row(updated_project),
-            fact=Fact(id=fact_id, description=description),
+            fact=Fact(id=fid, description=body.description, created_at=now, creator=body.worker),
             intent=intent_to_model(conn, updated_intent, project_id),
+        )
+
+
+@router.post("/projects/{project_id}/goals", response_model=GoalResponse, status_code=201)
+def create_goal(project_id: str, body: CreateGoalRequest):
+    with get_conn() as conn:
+        get_project_or_404(conn, project_id)
+        now = utcnow()
+        gid = next_goal_id(conn, project_id)
+        conn.execute(
+            "INSERT INTO facts (id, project_id, description, created_at, creator) VALUES (?, ?, ?, ?, ?)",
+            (gid, project_id, body.description, now, body.creator),
+        )
+        reopen_project_if_completed(conn, project_id)
+
+        updated_project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        assert updated_project is not None
+        return GoalResponse(
+            project=project_meta_from_row(updated_project),
+            fact=Fact(id=gid, description=body.description, created_at=now, creator=body.creator),
         )

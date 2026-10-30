@@ -40,6 +40,20 @@ def _looks_like_reason_data(payload: dict[str, Any]) -> bool:
     return False
 
 
+def _validate_complete_goals(complete: dict[str, Any]) -> list[str]:
+    goals = complete.get("goals")
+    if not isinstance(goals, list) or not goals:
+        raise ValueError("complete.goals must be a non-empty array of goal ids")
+    cleaned: list[str] = []
+    for item in goals:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("complete.goals must be a non-empty array of goal ids")
+        text = item.strip()
+        if text not in cleaned:
+            cleaned.append(text)
+    return cleaned
+
+
 def _looks_like_bootstrap_execute_data(payload: dict[str, Any]) -> bool:
     if not isinstance(payload, dict) or set(payload) != {"fact", "complete"}:
         return False
@@ -83,6 +97,7 @@ def validate_reason_payload(
             raise ValueError("complete and intents cannot coexist")
         if not isinstance(complete, dict) or "from" not in complete or "description" not in complete:
             raise ValueError("invalid complete payload")
+        complete = {**complete, "goals": _validate_complete_goals(complete)}
         return "complete", complete
     if intents is not None:
         if not isinstance(intents, list):
@@ -101,7 +116,9 @@ def validate_reason_payload(
     return "noop", None
 
 
-def validate_bootstrap_execute_payload(payload: dict[str, Any]) -> tuple[str, dict[str, str] | None]:
+def validate_bootstrap_execute_payload(
+    payload: dict[str, Any],
+) -> tuple[str, dict[str, str | list[str]] | None]:
     accepted, data = _unwrap_wrapped_payload(payload)
     if accepted is False:
         return "rejected", None
@@ -129,6 +146,7 @@ def validate_bootstrap_execute_payload(payload: dict[str, Any]) -> tuple[str, di
     if not isinstance(complete_description, str) or not complete_description.strip():
         raise ValueError("complete.description is required")
     result["complete_description"] = complete_description.strip()
+    result["complete_goals"] = _validate_complete_goals(complete)
     return "complete", result
 
 

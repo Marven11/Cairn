@@ -49,8 +49,12 @@ def _create_project(client: TestClient) -> str:
     return response.json()["project"]["id"]
 
 
-def test_project_workflow_create_conclude_complete_and_reopen(client: TestClient) -> None:
+def test_project_workflow_create_conclude_complete_add_goal_reopen(client: TestClient) -> None:
     project_id = _create_project(client)
+
+    detail = client.get(f"/projects/{project_id}").json()
+    assert [fact["id"] for fact in detail["facts"]] == ["origin", "g001"]
+    assert detail["project"]["status"] == "active"
 
     response = client.post(
         f"/projects/{project_id}/intents",
@@ -58,6 +62,7 @@ def test_project_workflow_create_conclude_complete_and_reopen(client: TestClient
     )
     assert response.status_code == 201
     assert response.json()["id"] == "i001"
+    assert response.json()["to"] == []
 
     response = client.post(
         f"/projects/{project_id}/intents/i001/heartbeat",
@@ -71,25 +76,44 @@ def test_project_workflow_create_conclude_complete_and_reopen(client: TestClient
         json={"worker": "explorer", "description": "new fact"},
     )
     assert response.status_code == 200
-    assert response.json()["fact"] == {"id": "f001", "description": "new fact"}
+    assert response.json()["fact"]["id"] == "f001"
+    assert response.json()["fact"]["created_at"]
+    assert response.json()["intent"]["to"] == ["f001"]
 
     response = client.post(
         f"/projects/{project_id}/complete",
-        json={"from": ["f001"], "description": "solved", "worker": "reasoner"},
-    )
-    assert response.status_code == 200
-    assert response.json()["to"] == "goal"
-
-    response = client.post(
-        f"/projects/{project_id}/reopen",
-        json={"description": "human correction", "creator": "human"},
+        json={"from": ["f001"], "goals": ["g001"], "description": "solved", "worker": "reasoner"},
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["project"]["status"] == "active"
-    assert payload["fact"] == {"id": "f002", "description": "human correction"}
-    assert payload["intent"]["from"] == ["f001"]
-    assert payload["intent"]["to"] == "f002"
+    assert payload["project"]["status"] == "completed"
+    assert payload["fact"]["id"] == "f002"
+    assert payload["intent"]["to"] == ["f002", "g001"]
+
+    summary = [p for p in client.get("/projects").json() if p["id"] == project_id][0]
+    assert summary["goal_count"] == 1
+    assert summary["completed_goal_count"] == 1
+
+    response = client.post(
+        f"/projects/{project_id}/goals",
+        json={"description": "also do this", "creator": "human"},
+    )
+    assert response.status_code == 201
+    assert response.json()["project"]["status"] == "active"
+    assert response.json()["fact"]["id"] == "g002"
+    assert response.json()["fact"]["created_at"]
+
+    detail = client.get(f"/projects/{project_id}").json()
+    assert detail["project"]["status"] == "active"
+    assert [fact["id"] for fact in detail["facts"]] == ["origin", "g001", "f001", "f002", "g002"]
+
+    # completed goals can anchor new intents
+    response = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["g001", "g002"], "description": "pursue both goals", "creator": "reasoner", "worker": None},
+    )
+    assert response.status_code == 201
+    assert response.json()["from"] == ["g001", "g002"]
 
 
 def test_stopping_project_releases_claims_and_reason_but_keeps_hints_writable(client: TestClient) -> None:
@@ -119,17 +143,21 @@ def test_stopping_project_releases_claims_and_reason_but_keeps_hints_writable(cl
     ).status_code == 403
 
 
-def test_intent_creation_rejects_goal_source_and_mismatched_initial_worker(client: TestClient) -> None:
+def test_intent_creation_accepts_goals_but_rejects_mismatched_worker(client: TestClient) -> None:
     project_id = _create_project(client)
 
     assert client.post(
         f"/projects/{project_id}/intents",
-        json={"from": ["goal"], "description": "invalid", "creator": "reasoner", "worker": None},
-    ).status_code == 400
+        json={"from": ["g001"], "description": "pursue the goal", "creator": "reasoner", "worker": None},
+    ).status_code == 201
     assert client.post(
         f"/projects/{project_id}/intents",
         json={"from": ["origin"], "description": "invalid", "creator": "reasoner", "worker": "explorer"},
     ).status_code == 400
+    assert client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["f999"], "description": "missing fact", "creator": "reasoner", "worker": None},
+    ).status_code == 404
 
 
 def test_settings_and_export_are_backed_by_the_same_database(client: TestClient) -> None:
@@ -142,8 +170,13 @@ def test_settings_and_export_are_backed_by_the_same_database(client: TestClient)
     exported = client.get(f"/projects/{project_id}/export?format=yaml")
     assert exported.status_code == 200
     assert "origin: starting point" in exported.text
-    assert "goal: finish" in exported.text
+    assert "id: g001" in exported.text
+    assert "description: finish" in exported.text
     assert client.get(f"/projects/{project_id}/export?format=invalid").status_code == 400
+
+    timeline = client.get(f"/projects/{project_id}/export?format=timeline")
+    assert timeline.status_code == 200
+    assert "GOAL DECLARED g001" in timeline.text
 
 
 def test_expired_intent_and_reason_leases_can_be_reclaimed(client: TestClient) -> None:

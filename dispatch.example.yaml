@@ -30,7 +30,8 @@ tasks:
     # Time budget for conclude fallback after the main phase times out or returns unusable output.
     conclude_timeout: 90
   reason:
-    # Reason decides whether the goal is met and whether new intents should be proposed.
+    # Reason decides whether any goal is met (marking it complete via `goals`)
+    # and whether new intents should be proposed.
     timeout: 300
     # Hard cap on how many new intents one reason step may create.
     max_intents: 2

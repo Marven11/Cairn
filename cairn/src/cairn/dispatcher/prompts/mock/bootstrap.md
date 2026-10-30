@@ -1,6 +1,6 @@
 {
   "phase": "bootstrap",
   "origin": "{origin}",
-  "goal": "{goal}",
+  "goals": {goals},
   "hints": {hints}
 }

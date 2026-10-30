@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import click
@@ -6,6 +7,7 @@ import uvicorn
 from cairn.dispatcher.logging import configure_logging
 from cairn.dispatcher.scheduler.loop import DispatcherLoop
 from cairn.server import db
+from cairn.server.migrate import migrate_database
 
 
 @click.group()
@@ -37,6 +39,31 @@ def serve(host: str, port: int, db_path: str, log_level: str, access_log: bool):
         log_level=log_level.lower(),
         access_log=access_log,
     )
+
+
+@main.command("migrate-db")
+@click.option(
+    "--db-path",
+    "source_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="Legacy database to convert",
+)
+@click.option(
+    "--target",
+    "target_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    required=True,
+    help="Output path for the converted database (must not exist)",
+)
+def migrate_db(source_path: Path, target_path: Path) -> None:
+    """Convert a legacy single-goal database to the multi-goal schema."""
+    try:
+        report = migrate_database(source_path, target_path)
+    except (ValueError, sqlite3.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"migrated {source_path} -> {target_path}")
+    click.echo(report.summary())
 
 
 @main.command()

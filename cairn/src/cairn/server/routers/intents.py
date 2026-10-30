@@ -11,6 +11,7 @@ from cairn.server.models import (
 )
 from cairn.server.services import (
     check_project_active,
+    complete_project_if_all_goals_done,
     get_claimable_open_intent_or_404,
     get_releasable_open_intent_or_404,
     intent_to_model,
@@ -18,8 +19,8 @@ from cairn.server.services import (
     next_intent_id,
     utcnow,
     validate_facts_exist,
+    validate_goals_for_completion,
     validate_intent_creator_worker,
-    validate_goal_not_in_sources,
 )
 
 router = APIRouter(tags=["intents"])
@@ -34,14 +35,13 @@ def create_intent(project_id: str, body: CreateIntentRequest):
     with get_conn() as conn:
         check_project_active(conn, project_id)
         validate_facts_exist(conn, project_id, body.from_)
-        validate_goal_not_in_sources(body.from_)
         validate_intent_creator_worker(body.creator, body.worker)
 
         now = utcnow()
         iid = next_intent_id(conn, project_id)
         claimed = body.worker is not None
         conn.execute(
-            "INSERT INTO intents (id, project_id, to_fact_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, NULL)",
+            "INSERT INTO intents (id, project_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
             (
                 iid,
                 project_id,
@@ -61,7 +61,7 @@ def create_intent(project_id: str, body: CreateIntentRequest):
         return Intent(
             id=iid,
             **{"from": body.from_},
-            to=None,
+            to=[],
             description=body.description,
             creator=body.creator,
             worker=body.worker,
@@ -123,18 +123,32 @@ def conclude(project_id: str, intent_id: str, body: ConcludeRequest):
     with get_conn() as conn:
         check_project_active(conn, project_id)
         get_claimable_open_intent_or_404(conn, project_id, intent_id, body.worker)
+        source_rows = conn.execute(
+            "SELECT fact_id FROM intent_sources WHERE intent_id = ? AND project_id = ?",
+            (intent_id, project_id),
+        ).fetchall()
+        source_ids = [row["fact_id"] for row in source_rows]
+        validate_goals_for_completion(
+            conn, project_id, body.completed_goals, source_ids=source_ids
+        )
 
         now = utcnow()
         fid = next_fact_id(conn, project_id)
 
         conn.execute(
-            "INSERT INTO facts (id, project_id, description) VALUES (?, ?, ?)",
-            (fid, project_id, body.description),
+            "INSERT INTO facts (id, project_id, description, created_at, creator) VALUES (?, ?, ?, ?, ?)",
+            (fid, project_id, body.description, now, body.worker),
         )
         conn.execute(
-            "UPDATE intents SET to_fact_id = ?, worker = ?, last_heartbeat_at = ?, concluded_at = ? WHERE id = ? AND project_id = ?",
-            (fid, body.worker, now, now, intent_id, project_id),
+            "UPDATE intents SET worker = ?, last_heartbeat_at = ?, concluded_at = ? WHERE id = ? AND project_id = ?",
+            (body.worker, now, now, intent_id, project_id),
         )
+        for target_id in [fid, *body.completed_goals]:
+            conn.execute(
+                "INSERT INTO intent_targets (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
+                (intent_id, project_id, target_id),
+            )
+        complete_project_if_all_goals_done(conn, project_id, now, intent_id)
 
         updated = conn.execute(
             "SELECT * FROM intents WHERE id = ? AND project_id = ?",
@@ -142,6 +156,6 @@ def conclude(project_id: str, intent_id: str, body: ConcludeRequest):
         ).fetchone()
 
         return ConcludeResponse(
-            fact=Fact(id=fid, description=body.description),
+            fact=Fact(id=fid, description=body.description, created_at=now, creator=body.worker),
             intent=intent_to_model(conn, updated, project_id),
         )

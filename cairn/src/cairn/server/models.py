@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+GOAL_ID_PATTERN = re.compile(r"^g\d+$")
+
+
+def is_goal_id(fact_id: str) -> bool:
+    return bool(GOAL_ID_PATTERN.match(fact_id))
 
 
 class Settings(BaseModel):
@@ -13,12 +20,14 @@ class Settings(BaseModel):
 class Fact(BaseModel):
     id: str
     description: str
+    created_at: str
+    creator: str | None = None
 
 
 class Intent(BaseModel):
     id: str
     from_: list[str] = Field(alias="from")
-    to: str | None = None
+    to: list[str] = Field(default_factory=list)
     description: str
     creator: str
     worker: str | None = None
@@ -49,6 +58,8 @@ class ProjectMeta(BaseModel):
     status: Literal["active", "stopped", "completed"]
     bootstrap_enabled: bool
     created_at: str
+    completed_at: str | None = None
+    completed_by_intent: str | None = None
     reason: ProjectReason | None = None
 
 
@@ -59,6 +70,8 @@ class ProjectSummary(ProjectMeta):
     working_intent_count: int
     unclaimed_intent_count: int
     hint_count: int
+    goal_count: int
+    completed_goal_count: int
 
 
 class ProjectDetail(BaseModel):
@@ -110,6 +123,24 @@ class CreateHintRequest(BaseModel):
         return text
 
 
+class CreateGoalRequest(BaseModel):
+    description: str
+    creator: str
+
+    @field_validator("description", "creator")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("must not be empty")
+        return text
+
+
+class GoalResponse(BaseModel):
+    project: ProjectMeta
+    fact: Fact
+
+
 class CreateIntentRequest(BaseModel):
     from_: list[str] = Field(alias="from", min_length=1)
     description: str
@@ -136,7 +167,8 @@ class CreateIntentRequest(BaseModel):
             text = item.strip()
             if not text:
                 raise ValueError("fact ids must not be empty")
-            cleaned.append(text)
+            if text not in cleaned:
+                cleaned.append(text)
         return cleaned
 
 
@@ -168,6 +200,7 @@ class ReasonClaimRequest(BaseModel):
 class ConcludeRequest(BaseModel):
     worker: str
     description: str
+    completed_goals: list[str] = Field(default_factory=list)
 
     @field_validator("worker", "description")
     @classmethod
@@ -177,11 +210,24 @@ class ConcludeRequest(BaseModel):
             raise ValueError("must not be empty")
         return text
 
+    @field_validator("completed_goals")
+    @classmethod
+    def validate_goal_ids(cls, value: list[str]) -> list[str]:
+        cleaned = []
+        for item in value:
+            text = item.strip()
+            if not text:
+                raise ValueError("goal ids must not be empty")
+            if text not in cleaned:
+                cleaned.append(text)
+        return cleaned
+
 
 class CompleteRequest(BaseModel):
     from_: list[str] = Field(alias="from", min_length=1)
     description: str
     worker: str
+    goals: list[str] = Field(min_length=1)
 
     model_config = {"populate_by_name": True}
 
@@ -201,8 +247,27 @@ class CompleteRequest(BaseModel):
             text = item.strip()
             if not text:
                 raise ValueError("fact ids must not be empty")
-            cleaned.append(text)
+            if text not in cleaned:
+                cleaned.append(text)
         return cleaned
+
+    @field_validator("goals")
+    @classmethod
+    def validate_goal_ids(cls, value: list[str]) -> list[str]:
+        cleaned = []
+        for item in value:
+            text = item.strip()
+            if not text:
+                raise ValueError("goal ids must not be empty")
+            if text not in cleaned:
+                cleaned.append(text)
+        return cleaned
+
+
+class CompleteResponse(BaseModel):
+    project: ProjectMeta
+    fact: Fact
+    intent: Intent
 
 
 class ConcludeResponse(BaseModel):
@@ -224,22 +289,3 @@ class UpdateProjectTitleRequest(BaseModel):
         if not text:
             raise ValueError("must not be empty")
         return text
-
-
-class ReopenRequest(BaseModel):
-    description: str
-    creator: str
-
-    @field_validator("description", "creator")
-    @classmethod
-    def validate_non_empty_text(cls, value: str) -> str:
-        text = value.strip()
-        if not text:
-            raise ValueError("must not be empty")
-        return text
-
-
-class ReopenResponse(BaseModel):
-    project: ProjectMeta
-    fact: Fact
-    intent: Intent

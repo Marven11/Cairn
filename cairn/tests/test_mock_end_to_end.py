@@ -67,13 +67,20 @@ class InProcessClient:
     def conclude(self, project_id: str, intent_id: str, worker: str, description: str) -> ApiResult:
         return self._post(
             f"/projects/{project_id}/intents/{intent_id}/conclude",
-            {"worker": worker, "description": description},
+            {"worker": worker, "description": description, "completed_goals": []},
         )
 
-    def complete(self, project_id: str, from_ids: list[str], description: str, worker: str) -> ApiResult:
+    def complete(
+        self,
+        project_id: str,
+        from_ids: list[str],
+        description: str,
+        worker: str,
+        goals: list[str],
+    ) -> ApiResult:
         return self._post(
             f"/projects/{project_id}/complete",
-            {"from": from_ids, "description": description, "worker": worker},
+            {"from": from_ids, "description": description, "worker": worker, "goals": goals},
         )
 
     def create_intent(self, project_id: str, from_ids: list[str], description: str, creator: str) -> ApiResult:
@@ -310,8 +317,11 @@ def test_mock_scheduler_bootstrap_completes_project_end_to_end(http_client: Test
         loop.close()
 
     assert project.project.status == "completed"
-    assert [fact.id for fact in project.facts] == ["origin", "goal", "f001"]
-    assert [(intent.id, intent.to) for intent in project.intents] == [("i001", "f001"), ("i002", "goal")]
+    assert [fact.id for fact in project.facts] == ["origin", "g001", "f001", "f002"]
+    assert [(intent.id, intent.to) for intent in project.intents] == [
+        ("i001", ["f001"]),
+        ("i002", ["f002", "g001"]),
+    ]
 
 
 def test_mock_scheduler_runs_reason_explore_reason_complete_chain(http_client: TestClient) -> None:
@@ -320,7 +330,7 @@ def test_mock_scheduler_runs_reason_explore_reason_complete_chain(http_client: T
     loop = _loop(
         _config(
             bootstrap=_phase("complete"),
-            reason=_phase("intent", rules=[{"fact_ids_gte": 3, "force": "complete"}]),
+            reason=_phase("intent", rules=[{"fact_ids_gte": 4, "force": "complete"}]),
             explore=_phase("fact"),
         ),
         client,
@@ -342,11 +352,11 @@ def test_mock_scheduler_runs_reason_explore_reason_complete_chain(http_client: T
         loop.close()
 
     assert project.project.status == "completed"
-    assert [fact.id for fact in project.facts] == ["origin", "goal", "f001", "f002"]
+    assert [fact.id for fact in project.facts] == ["origin", "g001", "f001", "f002", "f003"]
     assert [(intent.id, intent.to) for intent in project.intents] == [
-        ("i001", "f001"),
-        ("i002", "f002"),
-        ("i003", "goal"),
+        ("i001", ["f001"]),
+        ("i002", ["f002"]),
+        ("i003", ["f003", "g001"]),
     ]
     assert any("/reason_execute-" in path and "f002" in content for _, path, content in containers.writes)
     assert any("/explore_execute-" in path and "f001" in content for _, path, content in containers.writes)
@@ -376,9 +386,10 @@ def test_mock_scheduler_enabled_project_skips_bootstrap_when_worker_does_not_sup
         loop.close()
 
     assert project.project.status == "completed"
-    assert [(intent.description, intent.to) for intent in project.intents] == [
-        ("mock complete from origin", "goal")
-    ]
+    assert len(project.intents) == 1
+    completion = project.intents[0]
+    assert completion.description.startswith("mock complete from")
+    assert completion.to == ["f001", "g001"]
 
 
 def test_task_healthcheck_healthy_worker_completes_end_to_end(http_client: TestClient) -> None:
@@ -430,7 +441,7 @@ def test_task_healthcheck_failure_aborts_task_and_cools_down_worker(http_client:
 
     # unhealthy worker -> task aborted before execution, no facts written, worker put on cooldown
     assert project.project.status == "active"
-    assert [fact.id for fact in project.facts] == ["origin", "goal"]
+    assert [fact.id for fact in project.facts] == ["origin", "g001"]
     assert "mock-worker" in loop.worker_unhealthy_until
 
 

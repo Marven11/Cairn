@@ -18,6 +18,7 @@ from cairn.dispatcher.tasks.common import (
     best_effort_release,
     cancel_reason,
     did_timeout,
+    format_goals_block,
     project_allows_conclude_fallback,
     preview,
     run_worker_process,
@@ -182,6 +183,7 @@ def run_bootstrap_task(
                 worker.name,
                 data["fact_description"],
                 data["complete_description"],
+                complete_goals=data["complete_goals"],
                 source="bootstrap",
                 phase_ms=execute_ms,
                 total_ms=int((time.perf_counter() - task_started) * 1000),
@@ -382,7 +384,10 @@ def _try_conclude_fallback(
 
 
 def _bootstrap_prompt_replacements(project: ProjectDetail) -> dict[str, str]:
-    facts = {fact.id: fact.description for fact in project.facts}
+    origin = next(
+        (fact.description for fact in project.facts if fact.id == "origin"),
+        "",
+    )
     hints = [
         {
             "id": hint.id,
@@ -393,8 +398,8 @@ def _bootstrap_prompt_replacements(project: ProjectDetail) -> dict[str, str]:
         for hint in project.hints
     ]
     return {
-        "origin": facts.get("origin", ""),
-        "goal": facts.get("goal", ""),
+        "origin": origin,
+        "goals": format_goals_block(project),
         "hints": format_hints(hints),
     }
 
@@ -410,6 +415,7 @@ def _write_bootstrap_complete_result(
     source: str,
     phase_ms: int,
     total_ms: int | None = None,
+    complete_goals: list[str],
 ) -> str:
     conclude = write_conclude_result_with_fact_id(
         client,
@@ -433,8 +439,14 @@ def _write_bootstrap_complete_result(
         )
         return "success"
 
-    response = client.complete(project_id, [conclude.fact_id], complete_description, worker_name)
-    if response.status_code in (403, 409):
+    response = client.complete(
+        project_id,
+        [conclude.fact_id],
+        complete_description,
+        worker_name,
+        goals=complete_goals,
+    )
+    if response.status_code == 403:
         LOG.info(
             "bootstrap complete deferred project=%s intent=%s worker=%s source=%s status=%s fact_id=%s",
             project_id,
@@ -456,7 +468,7 @@ def _write_bootstrap_complete_result(
             response.status_code,
             response.text,
         )
-        return "success"
+        return "failed"
     if total_ms is None:
         LOG.info(
             "bootstrap completed project=%s intent=%s worker=%s source=%s from=%s phase_ms=%s",

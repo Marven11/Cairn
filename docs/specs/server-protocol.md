@@ -4,7 +4,7 @@
 
 ## 本质
 
-衍迹（Cairn）将目标导向的探索过程建模为一张有向无环图：从已知事实出发，不断探索产出新事实，直到某些事实共同满足终点。名称取自登山者用石头垒起的路标——每个 Fact 是一块石头，Agent 沿着前人的 cairn 继续探索，同时垒新的 cairn 给后来者。
+衍迹（Cairn）将目标导向的探索过程建模为一张有向无环图：从已知事实出发，不断探索产出新事实，直到所有 goal 均被满足。名称取自登山者用石头垒起的路标——每个 Fact 是一块石头，Agent 沿着前人的 cairn 继续探索，同时垒新的 cairn 给后来者。
 
 这套 API 管理这张图的生长过程。多个消费者（人或 Agent）并发读取完整图，各自声明探索意图，各自产出新事实，最终由某个消费者判断终点已达成。对于一些很简单的问题，消费者也可以在项目最初阶段直接围绕起点和终点做一次快速推进，而不必先拆成多轮显式规划；这种“起步即做”的过程仍通过 Intent/Fact 正常落图。
 
@@ -36,13 +36,15 @@ Fact 只增不改，状态变化通过追加新 Fact 表达。例如在多层网
 
 ### Project
 
-一个有明确起点和终点的问题实例，包含完整的图数据。
+一个有明确起点和一组 goal 的问题实例，包含完整的图数据。
 
 三种状态：
 
 - `active`：进行中，接受探索写操作
 - `stopped`：硬停止，不接受探索写操作，可恢复为 `active`
-- `completed`：当前已完成，不接受探索写操作；若外部确认之前的完成判断有误，可显式调用 `reopen` 撤销完成态并继续
+- `completed`：所有 goal 均已完成，不接受探索写操作；新增 goal 会自动回到 `active` 继续
+
+项目完成条件是全部 goal 被完成，而非单一终点节点。
 
 ### Fact
 
@@ -50,12 +52,14 @@ Fact 只增不改，状态变化通过追加新 Fact 表达。例如在多层网
 
 描述文本应是探索结论的提炼，而非原始数据。当原始输出较大时（如扫描结果），描述应包含关键洞见和原始数据的文件引用，例如："nmap 全端口扫描发现 22/80/443/8080 开放，80 和 8080 均为 HTTP 服务，详细结果见 /tmp/scans/nmap_192.168.1.10.xml"。这保证图保持轻量，同时原始数据仍可追溯。
 
-每个 Project 有两个特殊 Fact，在 Project 创建时写入：
+每个 Project 创建时写入：
 
-- `origin`：起点
-- `goal`：终点
+- `origin`：起点，特殊 id，不属于任何计数序列
+- `g001`：首个 goal
 
-普通 Fact 由系统生成 id，如 `f001`。
+普通 Fact 由系统生成 id，如 `f001`；goal 由系统生成 id，如 `g002`。goal 也是 Fact，区别只在 id 前缀。`created_at` 记录创建时间，用于区分 goal 的时间线。
+
+Goal 不可修改或删除；要纠正先前的 goal，需要新增 goal。一个 goal 的完成条件是被至少一条 Intent 的 `to` 引用；已完成的 goal 可以被 Intent 的 `from` 引用，作为后续探索的出发点。
 
 ### Intent
 
@@ -63,9 +67,11 @@ Fact 只增不改，状态变化通过追加新 Fact 表达。例如在多层网
 
 - **进行中**：Intent 已被某个消费者认领，`worker` 不为 null
 - **未认领**：Intent 尚无结论，且当前 `worker` 为 null，等待消费者接手
-- **已结论**：`to` 不为 null，探索已完成，产出了结论 Fact
+- **已结论**：`to` 非空数组，探索已完成，产出了结论
 
-未结论的 Intent（`to=null`）表示这个探索方向已声明但尚未有结论。声明时可只写下方向而不认领，也可同时认领。已结论的 Intent 不可修改。
+未结论的 Intent（`to` 为空数组）表示这个探索方向已声明但尚未有结论。声明时可只写下方向而不认领，也可同时认领。已结论的 Intent 不可修改。
+
+`to` 是数组：conclude 总是产生一个新的普通 Fact，并可以同时链接 0 个、1 个或多个 goal，表示根据 `from` 的全部 Fact 与本次探索，这些 goal 已被完成。空数组表示尚未产生结论。由 `migrate-db` 转换的 legacy 完成边没有结论 Fact，其 `to` 只含 goal id。
 
 协议本身不区分 Intent 的“类型”，所有 Intent 在服务端都一视同仁；但消费者可以约定某些**保留语义**。例如可约定一条：
 
@@ -76,21 +82,13 @@ Fact 只增不改，状态变化通过追加新 Fact 表达。例如在多层网
 
 这个约定适合那些可能很快完成、或至少很快得到首个关键突破的问题。这样项目在前端和审计记录中仍然是可见、可理解的：读者能明确看到系统先做过一次 `bootstrap` 尝试，产出了什么关键事实；像 flag、shell、权限证明这类对后续系统有价值的结果，不会因为直接完成项目而绕开事实图。
 
-**超边语义：** `from` 允许多个 Fact id。`from` 包含多个 id 时，这条 Intent 在图中等价于一条超边——多个源节点共同指向同一个目标节点，共享同一个 description、creator 和 worker：
-
-```
-f002 ──┐
-       ├──(intent)──→ f006
-f004 ──┘
-```
-
-这完整保留了"多个已知事实共同支撑一次探索"的因果关系，而不是被迫选一个主 Fact 丢失其余上下文。
+**超边语义：** `from` 允许多个 Fact id。`from` 包含多个 id 时，这条 Intent 在图中等价于一条超边——多个源节点共同指向同一组目标节点，共享同一个 description、creator 和 worker。已结论 Intent 的 `to` 也可以包含多个 goal，一次探索同时完成多个目标。这完整保留了"多个已知事实共同支撑一次探索"以及"一次探索同时满足多个目标"的因果关系，而不是被迫选一个主 Fact 丢失其余上下文。
 
 ### Hint
 
 图外输入，策略建议或补充说明。不属于事实图，不影响因果关系，供消费者读图时参考。
 
-Hint 代表外部补充的高纬输入，不属于探索执行本身。因此项目处于 `stopped` 或 `completed` 时，仍允许继续补充 Hint。`stopped` 项目恢复为 `active` 后，后续消费者会在下一次读图时看到这些新增提示；`completed` 项目上的新 Hint 会被保留，若之后需要继续处理该项目，仍应通过 `reopen` 回到 `active`。
+Hint 代表外部补充的高纬输入，不属于探索执行本身。因此项目处于 `stopped` 或 `completed` 时，仍允许继续补充 Hint。`stopped` 项目恢复为 `active` 后，后续消费者会在下一次读图时看到这些新增提示；`completed` 项目上的新 Hint 会被保留，若之后需要继续处理该项目，应通过新增 goal 回到 `active`。
 
 除了人工补充的策略提示，Hint 也适合用于消费者之间传递**态势评估**。随着图增长，大量已排除的方向会稀释有效信息。消费者在完成一轮探索后，可将对当前局势的判断写为 Hint（如"SSH 和 SQL 注入方向均已排除，攻击面集中在文件上传功能"），帮助后续消费者快速定位重点，降低每轮读图的认知成本。
 
@@ -106,6 +104,8 @@ title           # 项目名称
 status          # "active" | "stopped" | "completed"
 bootstrap_enabled  # 是否允许消费者在初始态运行 bootstrap，默认 true
 created_at
+completed_at          # 最近一次进入 completed 的时间；重开（新增 goal）后清空
+completed_by_intent   # 触发最近一次完成的 Intent id；重开后清空
 reason          # 当前项目级 reason lease，null 表示当前无人执行 reason
 ```
 
@@ -121,16 +121,18 @@ last_heartbeat_at  # 最近一次 reason 心跳时间
 ### Fact
 
 ```
-id              # "origin" | "goal" | 系统生成（如 f001）
+id              # "origin" | "g001" 等 goal id | "f001" 等普通 id
 description     # 客观事实描述
+created_at      # 创建时间
+creator         # goal 创建者；origin/系统生成 fact 为 null，conclude 生成为 conclude 的 worker
 ```
 
 ### Intent
 
 ```
 id
-from            # 出发 Fact 的 id 数组，至少一个
-to              # 结论 Fact 的 id，null 表示尚无结论
+from            # 出发 Fact 的 id 数组，至少一个，可包含 goal
+to              # 结论 Fact 的 id 数组；首个元素是结论 Fact，其余是本次完成的 goal；空数组表示尚无结论
 description     # 意图描述
 creator         # 声明意图的消费者，创建时写入，不可变
 worker          # 执行者标识，语义随状态变化（见下方说明）
@@ -224,6 +226,7 @@ Body：
     "status": "active",
     "bootstrap_enabled": true,
     "created_at": "2026-03-21T10:00:00Z",
+    "completed_at": null,
     "reason": {
       "worker": "dispatcher-worker-A",
       "trigger": "new_facts",
@@ -235,7 +238,9 @@ Body：
     "intent_count": 5,
     "working_intent_count": 2,
     "unclaimed_intent_count": 1,
-    "hint_count": 3
+    "hint_count": 3,
+    "goal_count": 2,
+    "completed_goal_count": 1
   }
 ]
 ```
@@ -244,7 +249,7 @@ Body：
 
 #### POST /projects
 
-创建新项目。`origin` 和 `goal` 写入 `facts` 作为特殊 Fact。`hints` 可选。`bootstrap_enabled` 可选，默认为 `true`；为 `false` 时消费者跳过 bootstrap。即使为 `true`，消费者没有 bootstrap 能力时也可直接进入 reason。
+创建新项目。`origin` 写入 `facts`；`goal` 写入为首个 goal Fact（id `g001`）。`hints` 可选。`bootstrap_enabled` 可选，默认为 `true`；为 `false` 时消费者跳过 bootstrap。即使为 `true`，消费者没有 bootstrap 能力时也可直接进入 reason。
 
 Body：
 
@@ -277,6 +282,7 @@ Body：
     "status": "active",
     "bootstrap_enabled": true,
     "created_at": "2026-03-21T10:00:00Z",
+    "completed_at": null,
     "reason": {
       "worker": "dispatcher-worker-A",
       "trigger": "new_facts",
@@ -285,15 +291,15 @@ Body：
     }
   },
   "facts": [
-    { "id": "origin", "description": "目标 http://192.168.1.10" },
-    { "id": "goal",   "description": "拿到 flag" },
-    { "id": "f001",   "description": "发现开放端口 22/80/443" }
+    { "id": "origin", "description": "目标 http://192.168.1.10", "created_at": "2026-03-21T10:00:00Z", "creator": null },
+    { "id": "g001",   "description": "拿到 flag", "created_at": "2026-03-21T10:00:00Z", "creator": null },
+    { "id": "f001",   "description": "发现开放端口 22/80/443", "created_at": "2026-03-21T10:02:00Z", "creator": "agent-A" }
   ],
   "intents": [
     {
       "id": "i001",
       "from": ["origin"],
-      "to": "f001",
+      "to": ["f001"],
       "description": "nmap 全端口扫描",
       "creator": "agent-A",
       "worker": "agent-A",
@@ -304,7 +310,7 @@ Body：
     {
       "id": "i002",
       "from": ["f001"],
-      "to": null,
+      "to": [],
       "description": "http 服务探测与目录扫描",
       "creator": "agent-A",
       "worker": "agent-B",
@@ -358,7 +364,7 @@ Body：
 
 #### PUT /projects/{project_id}/status
 
-更新项目状态。仅允许 `active` 和 `stopped` 之间切换。`completed` 项目不可通过该接口再次变更状态；若需要撤销完成态，必须调用专用的 `reopen` 接口。该接口属于项目管理操作，不属于探索写操作。
+更新项目状态。仅允许 `active` 和 `stopped` 之间切换。`completed` 项目不可通过该接口再次变更状态；若需要继续处理，应新增 goal，项目会自动回到 `active`。该接口属于项目管理操作，不属于探索写操作。
 
 当项目切到 `stopped` 时，Server 会立即把所有尚无结论的 Intent 的 `worker` 清空为 `null`，并把 `project.reason` 清空，使这些 claim 立刻失效。这样项目恢复后可以马上重新认领，不必等待超时。`stopped` 的语义是硬停止：Server 负责拒绝后续探索写操作并清空 open intent claim / reason lease；消费者拿到这个信号后应立刻取消本地仍在运行的任务，并停止对应项目容器。
 
@@ -482,9 +488,7 @@ Body：
 }
 ```
 
-`from` 为数组，至少包含一个 Fact id。`worker` 可为 `null` 或等于 `creator`；`null` 表示只声明不认领，等于 `creator` 表示声明并立即认领。多个 Fact 共同驱动同一次探索时，全部列入 `from`，完整保留因果关系。例如：
-
-`from` 不能包含 `goal`。
+`from` 为数组，至少包含一个 Fact id，可以包含 goal（包括尚未完成的 goal——从 goal 出发表示朝该目标推进；已完成的 goal 则是普通出发点）。`worker` 可为 `null` 或等于 `creator`；`null` 表示只声明不认领，等于 `creator` 表示声明并立即认领。多个 Fact 共同驱动同一次探索时，全部列入 `from`，完整保留因果关系。例如：
 
 服务端不校验 `description` 的业务语义，因此像 `description = "bootstrap"` 这样的保留 intent 也只是普通 Intent。是否把它解释为“项目最初阶段的直接推进尝试”，由消费者自己约定。
 
@@ -535,7 +539,9 @@ Body：
 
 #### POST /projects/{project_id}/intents/{intent_id}/conclude
 
-探索结束，产出新 Fact 并将 Intent 结论落定。原子操作。仅对尚无结论的 Intent 有效。claim 规则与 heartbeat 相同：未认领可直接 conclude；由当前 `worker` conclude；若被其他消费者占用且未超时，返回 409。Conclude 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
+探索结束，总是产出一个新的普通 Fact，并可选择同时完成 0 个、1 个或多个 goal，然后将 Intent 结论落定。原子操作。仅对尚无结论的 Intent 有效。claim 规则与 heartbeat 相同：未认领可直接 conclude；由当前 `worker` conclude；若被其他消费者占用且未超时，返回 409。Conclude 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
+
+`completed_goals` 列出本次完成的 goal id，可为空。其中的每个 goal 必须存在且尚未完成，否则返回 404/409；且不能同时出现在该 Intent 的 `from` 中（一个 Intent 不能把同一个 goal 既当输入又当完成目标），否则返回 409。服务端把结论 Fact 与这些 goal 一并写入 `to`。若调用后项目全部 goal 均已至少被一条 Intent 的 `to` 引用，项目状态变为 `completed` 并清空 `project.reason`。
 
 `worker` 写入后永久保留，标识本次结论由谁产出。
 
@@ -544,7 +550,8 @@ Body：
 ```json
 {
   "worker": "agent-B",
-  "description": "80端口运行 nginx 1.18，存在目录遍历"
+  "description": "80端口运行 nginx 1.18，存在目录遍历",
+  "completed_goals": []
 }
 ```
 
@@ -554,12 +561,14 @@ Body：
 {
   "fact": {
     "id": "f002",
-    "description": "80端口运行 nginx 1.18，存在目录遍历"
+    "description": "80端口运行 nginx 1.18，存在目录遍历",
+    "created_at": "2026-03-21T10:05:00Z",
+    "creator": "agent-B"
   },
   "intent": {
     "id": "i002",
     "from": ["f001"],
-    "to": "f002",
+    "to": ["f002"],
     "description": "http 服务探测与目录扫描",
     "creator": "agent-A",
     "worker": "agent-B",
@@ -574,49 +583,39 @@ Body：
 
 #### POST /projects/{project_id}/complete
 
-消费者判断某些 Facts 共同满足 goal 后调用，声明项目完成。原子操作。Complete 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
+消费者判断某些 Facts 满足若干 goal 后调用，标记这些 goal 完成。原子操作。Complete 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
 
-创建一条 `from` 指向所列 Facts、`to` 指向 `goal` 的已结论 Intent。完成声明无探索过程，服务端将 `creator` 和 `worker` 均设为请求中的 `worker` 值。Project 状态变为 `completed`，并立即清空当前 `project.reason`。
+与 conclude 相同的完成机制：创建一条 `from` 指向所列 Facts 的已结论 Intent，总是产出一个新的普通 Fact（内容为 `description`），并把 `goals` 列入该 Intent 的 `to`。`goals` 必填且非空，只允许列出当前尚未完成的 goal；每次调用只完成明确列出的 goal；`from` 与 `goals` 不允许出现同一个 goal id，否则返回 409。若调用后全部 goal 均已完成，项目状态变为 `completed` 并清空 `project.reason`；否则项目保持 `active`，等待剩余 goal。
 
-如果后续外部验证发现这次完成判断有误，可再调用 `POST /projects/{project_id}/reopen` 撤销这条完成边，并把纠错信息写成新的 Fact 后继续探索。
-
-`from` 不能包含 `goal`。
+如果后续外部验证发现某个已完成的 goal 判断有误，应新增一个描述正确要求的 goal；新增 goal 会让 `completed` 项目自动回到 `active`。
 
 Body：
 
 ```json
 {
   "from": ["f007", "f012", "f015"],
-  "description": "三个 shell 均已获取，满足 goal 要求",
+  "goals": ["g001"],
+  "description": "三个 shell 均已获取，满足 g001 要求",
   "worker": "agent-A"
 }
 ```
 
+响应：包含 `project`（更新后的状态）、`fact`（新产出的完成证明 Fact）与 `intent`（`to` 为 `[新 fact id, *goals]` 的完成 Intent）。
+
 ---
 
-#### POST /projects/{project_id}/reopen
+#### POST /projects/{project_id}/goals
 
-外部确认项目其实尚未完成时，显式撤销当前完成态。该接口属于项目管理操作，不属于探索写操作；仅 `completed` 项目允许调用。
+向项目新增一个 goal。goal 属于图数据写操作，任何状态的项目均允许。
 
-服务端会：
-
-- 找到当前唯一一条 `to=goal` 的完成边
-- 读取它原本的 `from`
-- 删除这条完成边，不保留“曾完成过一次”的图内历史
-- 新建一个普通 Fact，内容为调用者提供的客观纠错说明
-- 新建一条已结论 Intent，`description` 固定为 `external_feedback`，其 `from` 继承原完成边的 `from`，`to` 指向这个新 Fact
-- 将 `creator` 和 `worker` 都写为请求中的 `creator`
-- 将项目状态改回 `active`
-- 清空当前 `project.reason`
-
-这适合诸如“提交的 flag 是错的，需要继续寻找正确 flag”这类图外反馈。反馈本身被记成图中的新 Fact，而 `reopen` 只是触发这次改写的控制动作。
+服务端生成下一个 `g` 序号 id，写入 `facts` 并携带 `created_at` 与 `creator`。若项目当前为 `completed`，状态自动回到 `active`（自动重开）；已完成的历史 goal 与完成边均保留。
 
 Body：
 
 ```json
 {
-  "description": "flag FLAG{fake} 是错误的，需要继续寻找正确 flag",
-  "creator": "judge"
+  "description": "继续拿下内网第二台机器的 shell",
+  "creator": "human"
 }
 ```
 
@@ -628,23 +627,15 @@ Body：
     "id": "proj_001",
     "title": "xx渗透测试",
     "status": "active",
+    "bootstrap_enabled": true,
     "created_at": "2026-03-21T10:00:00Z",
     "reason": null
   },
   "fact": {
-    "id": "f016",
-    "description": "flag FLAG{fake} 是错误的，需要继续寻找正确 flag"
-  },
-  "intent": {
-    "id": "i021",
-    "from": ["f008"],
-    "to": "f016",
-    "description": "external_feedback",
-    "creator": "judge",
-    "worker": "judge",
-    "last_heartbeat_at": "2026-03-21T10:10:00Z",
-    "created_at": "2026-03-21T10:10:00Z",
-    "concluded_at": "2026-03-21T10:10:00Z"
+    "id": "g002",
+    "description": "继续拿下内网第二台机器的 shell",
+    "created_at": "2026-03-21T11:00:00Z",
+    "creator": "human"
   }
 }
 ```
@@ -655,14 +646,19 @@ Body：
 
 #### GET /projects/{project_id}/export?format=yaml
 
-返回项目图的 YAML 结构化快照，供消费者读取。不含 `last_heartbeat_at`。尚无结论的 Intent（`to=null`）出现在 YAML 中，`worker` 字段直接反映当前是否有消费者在处理。`project.reason` 不在导出中出现，因为它是项目级协调状态，不属于事实图。读取时服务端仍会执行超时清理，因此导出结果反映的是清理后的当前状态。`created_at` 和 `concluded_at` 按服务端当前时区格式化为 `YYYY-MM-DD HH:mm:ss`。
+返回项目图的 YAML 结构化快照，供消费者读取。不含 `last_heartbeat_at`。尚无结论的 Intent（`to` 为空数组）出现在 YAML 中，`worker` 字段直接反映当前是否有消费者在处理。`project.reason` 不在导出中出现，因为它是项目级协调状态，不属于事实图。读取时服务端仍会执行超时清理，因此导出结果反映的是清理后的当前状态。`created_at` 和 `concluded_at` 按服务端当前时区格式化为 `YYYY-MM-DD HH:mm:ss`。goal 单独列在 `goals` 段（含完成状态），不出现在 `facts` 段。
 
 ```yaml
 project:
   title: "xx渗透测试"
   origin: "目标 http://192.168.1.10"
-  goal: "拿到 flag"
   bootstrap_enabled: true
+
+goals:
+  - id: g001
+    description: "拿到 flag"
+    created_at: "2026-03-21 18:00:00"
+    status: completed
 
 hints:
   - content: "优先看 web 服务"
@@ -675,28 +671,38 @@ hints:
 facts:
   - id: origin
     description: "目标 http://192.168.1.10"
-  - id: goal
-    description: "拿到 flag"
+    created_at: "2026-03-21 18:00:00"
   - id: f001
     description: "发现开放端口 22/80/443"
+    created_at: "2026-03-21 18:02:00"
   - id: f002
     description: "80端口运行 nginx 1.18，存在目录遍历"
+    created_at: "2026-03-21 18:04:00"
   - id: f003
     description: "遍历发现 /backup/db.sql，包含用户表"
+    created_at: "2026-03-21 18:05:00"
   - id: f004
     description: "获得凭据 admin/passwd123"
+    created_at: "2026-03-21 18:05:30"
   - id: f005
     description: "ssh 登录失败，凭据不通用"
+    created_at: "2026-03-21 18:06:00"
   - id: f006
     description: "web后台登录成功，发现文件上传功能"
+    created_at: "2026-03-21 18:06:00"
   - id: f007
     description: "上传 webshell 成功，获得 www-data shell"
+    created_at: "2026-03-21 18:07:00"
   - id: f008
     description: "在 /var/www/html/flag.txt 找到 flag{abc123}"
+    created_at: "2026-03-21 18:08:00"
+  - id: f009
+    description: "flag{abc123} 满足 g001 要求"
+    created_at: "2026-03-21 18:08:01"
 
 intents:
   - from: [origin]
-    to: f001
+    to: [f001]
     description: "nmap 全端口扫描"
     creator: "agent-A"
     worker: "agent-A"
@@ -704,7 +710,7 @@ intents:
     concluded_at: "2026-03-21 18:02:00"
 
   - from: [f001]
-    to: f002
+    to: [f002]
     description: "http 服务探测与目录扫描"
     creator: "agent-A"
     worker: "agent-B"
@@ -712,7 +718,7 @@ intents:
     concluded_at: "2026-03-21 18:04:00"
 
   - from: [f002]
-    to: f003
+    to: [f003]
     description: "利用目录遍历下载 /backup/db.sql"
     creator: "agent-B"
     worker: "agent-B"
@@ -720,7 +726,7 @@ intents:
     concluded_at: "2026-03-21 18:05:00"
 
   - from: [f003]
-    to: f004
+    to: [f004]
     description: "解析 db.sql 提取用户凭据"
     creator: "agent-A"
     worker: "agent-A"
@@ -728,7 +734,7 @@ intents:
     concluded_at: "2026-03-21 18:05:30"
 
   - from: [f004]
-    to: f005
+    to: [f005]
     description: "尝试 ssh 登录"
     creator: "agent-A"
     worker: "agent-C"
@@ -736,7 +742,7 @@ intents:
     concluded_at: "2026-03-21 18:06:00"
 
   - from: [f002, f004]
-    to: f006
+    to: [f006]
     description: "用 f004 获取的凭据登录 f002 发现的后台"
     creator: "agent-A"
     worker: "agent-B"
@@ -744,7 +750,7 @@ intents:
     concluded_at: "2026-03-21 18:06:00"
 
   - from: [f006]
-    to: f007
+    to: [f007]
     description: "上传 php webshell 绕过扩展名检测"
     creator: "agent-B"
     worker: "agent-B"
@@ -752,7 +758,7 @@ intents:
     concluded_at: "2026-03-21 18:07:00"
 
   - from: [f007]
-    to: f008
+    to: [f008]
     description: "在 shell 中搜索 flag 文件"
     creator: "agent-B"
     worker: "agent-A"
@@ -760,8 +766,8 @@ intents:
     concluded_at: "2026-03-21 18:08:00"
 
   - from: [f008]
-    to: goal
-    description: "flag{abc123} 满足 goal 要求"
+    to: [f009, g001]
+    description: "flag{abc123} 满足 g001 要求"
     creator: "agent-A"
     worker: "agent-A"
     created_at: "2026-03-21 18:08:00"
@@ -772,7 +778,7 @@ intents:
 
 ```yaml
   - from: [f003]
-    to: null
+    to: []
     description: "尝试利用目录遍历读取敏感文件"
     creator: "agent-A"
     worker: "agent-C"
@@ -784,7 +790,7 @@ intents:
 
 #### GET /projects/{project_id}/export?format=timeline
 
-返回项目的时间线纯文本，按事件发生时间排序。YAML 快照展示图的结构拓扑，timeline 展示事件的先后顺序和因果链，两者互补。事件类型包括 `PROJECT CREATED`、`HINT`、`INTENT DECLARED`、`INTENT CONCLUDED`、`PROJECT COMPLETED`。若项目曾经完成后又被 `reopen`，由于旧的 `goal` 边已被撤销，timeline 中不会保留之前那次 `PROJECT COMPLETED` 事件。
+返回项目的时间线纯文本，按事件发生时间排序。YAML 快照展示图的结构拓扑，timeline 展示事件的先后顺序和因果链，两者互补。事件类型包括 `PROJECT CREATED`、`GOAL DECLARED`、`GOAL COMPLETED`、`HINT`、`INTENT DECLARED`、`INTENT CONCLUDED`、`PROJECT COMPLETED`。goal 与完成边不可撤销，因此每次 goal 完成（含完成后重开再次完成）都会在 timeline 中保留；`PROJECT COMPLETED` 只标记项目最近一次进入 `completed` 的那次结论（重开期间不出现，再次完成时重新出现）。
 
 ---
 
@@ -798,7 +804,7 @@ intents:
    读取图快照（仅供 Dispatcher 渲染给 Agent）
 
 3. 若项目仍处于最初阶段：
-   典型判定是 facts 只有 `origin` 和 `goal`，且没有普通 intent；
+   典型判定是 facts 只有 `origin` 和若干 goal，且没有普通 intent；
    某些消费者会允许“没有任何 intent”，或“只存在保留 bootstrap intent”都视为初始态
    若 `project.bootstrap_enabled=false`，或消费者不具备 bootstrap 能力，则直接进入 reason；
    a. 若尚不存在保留 bootstrap intent：
@@ -811,9 +817,9 @@ intents:
    d. 若拿到了关键证明性事实：
       POST /projects/{id}/intents/{intent_id}/conclude
         { worker: "dispatcher-worker-A", description: "发现登录页存在默认口令 admin:admin" }
-      若该新 fact 已足以满足 goal，也可继续：
+      若该新 fact 已足以满足部分 goal，也可继续：
       POST /projects/{id}/complete
-        { from: ["新写入的 fact id"], description: "为什么该事实已足以满足 goal", worker: "dispatcher-worker-A" }
+        { from: ["新写入的 fact id"], goals: ["g001"], description: "为什么该事实已足以满足这些 goal", worker: "dispatcher-worker-A" }
    e. 若本轮 bootstrap 失败且需要放弃：
       POST /projects/{id}/intents/{intent_id}/release
         { worker: "dispatcher-worker-A" }
@@ -839,10 +845,10 @@ intents:
       认领成功后，派发一次 `reason`
    b. 推进过程中持续 POST /projects/{id}/reason/heartbeat
         { worker: "dispatcher-worker-A" }
-   c. 若 `reason` 返回完成结论：
+   c. 若 `reason` 返回完成结论（标记满足若干 goal）：
       POST /projects/{id}/complete
-        { from: ["f008"], description: "flag{abc} 满足 goal 要求", worker: "dispatcher-worker-A" }
-      流程结束
+        { from: ["f008"], goals: ["g001"], description: "flag{abc} 满足 g001 要求", worker: "dispatcher-worker-A" }
+      若全部 goal 已完成，项目转入 `completed`，流程结束；否则回到步骤 1 继续剩余 goal
    d. 若 `reason` 返回新的 intent：
       POST /projects/{id}/intents
         { from: ["f003"], description: "尝试 SQL 注入", creator: "dispatcher-worker-A", worker: null }
@@ -857,9 +863,9 @@ intents:
         { worker: "dispatcher-worker-A" }
    g. 回到步骤 1
 
-6. 若项目已 `completed`，但图外验证确认之前的完成判断有误：
-   a. POST /projects/{id}/reopen
+6. 若项目已 `completed`，但图外验证确认之前的完成判断有误，或需要继续扩展任务：
+   a. POST /projects/{id}/goals
         { description: "flag FLAG{fake} 是错误的，需要继续寻找正确 flag", creator: "judge" }
-   b. 项目回到 `active`，图中新增一条 `external_feedback` 结论边和一个纠错 Fact
+   b. 项目自动回到 `active`，已完成 goal 与完成边均保留，新 goal 等待完成
    c. 回到步骤 1
 ```

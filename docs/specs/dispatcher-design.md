@@ -26,7 +26,7 @@ Agent 不直接认领 Intent，不直接 heartbeat，不直接调用 Cairn API�
 8. 项目容器收尾不应阻塞主调度循环；多个已完成项目的容器 cleanup 可以并行进行。
 9. 项目切到非 `active` 后，Dispatcher 必须把它视为硬停止：不再派发新任务；对本地仍在运行的 `bootstrap`、`explore`、`reason` 任务立即发出取消；对已取消任务不再进入 conclude fallback；并在后续轮询中停止该项目容器，杀掉容器内仍在运行的 Agent 进程。
 10. 当前实现按“单 Dispatcher 实例”设计和测试；不支持多个 Dispatcher 同时连接同一服务端共同调度。
-11. 若项目曾 `completed` 后又被服务端显式 `reopen` 为 `active`，Dispatcher 不做特殊分支：它会把这视为普通 active 项目继续调度；同时若该项目容器仍处于已排队 cleanup 状态，Dispatcher 会先等待 cleanup 完成，避免与旧的 completed/stopped cleanup 竞态。
+11. 若项目曾 `completed` 后又因新增 goal 被服务端自动重开为 `active`，Dispatcher 不做特殊分支：它会把这视为普通 active 项目继续调度；同时若该项目容器仍处于已排队 cleanup 状态，Dispatcher 会先等待 cleanup 完成，避免与旧的 completed/stopped cleanup 竞态。
 12. 已知限制：当前协议只记录当前 claim 持有者，不保留 Intent 的 worker 历史；因此项目被 `stopped` 后，随着 open intent 的 `worker` 被服务端清空，Dispatcher/UI/API 都无法直接展示“停止前最后是谁在推进这个 intent”。后续若要补这部分可观测性，较合理的方向是在 Intent 上增加类似 `worker_history` 的历史字段，而不是改变当前 claim 语义。
 
 补充：
@@ -139,7 +139,7 @@ Dispatcher 会同时读取两类数据：
 6. Worker 输出结构化 JSON
 7. Dispatcher 解析结果，并调用 `POST /projects/{project_id}/complete`、`POST /projects/{project_id}/intents`、`POST /projects/{project_id}/intents/{intent_id}/conclude`、`POST /projects/{project_id}/intents/{intent_id}/release` 或 `POST /projects/{project_id}/reason/release`
 
-项目若被切到 `stopped`，这条主链路会在下一轮短路：Dispatcher 不再把该项目纳入 active 调度集合，会先取消本地仍在运行的任务，再转入容器 cleanup 流程并停止项目容器。对 `bootstrap` / `explore` 来说，被 `stopped` 取消后不会再进入 conclude fallback，因此不会再额外落 Fact。项目恢复为 `active` 后，Dispatcher 会重新读取图状态，再决定是继续 `explore`、进入 `reason`，还是在初始态依据 `project.bootstrap_enabled` 和 Worker 能力重新选择 `bootstrap` 或 `reason`。项目若在 `completed` 后被服务端 `reopen`，对 Dispatcher 来说也等价于“重新变成 active 且图上多了一个新 fact”；下一轮会按普通 active 项目继续调度。
+项目若被切到 `stopped`，这条主链路会在下一轮短路：Dispatcher 不再把该项目纳入 active 调度集合，会先取消本地仍在运行的任务，再转入容器 cleanup 流程并停止项目容器。对 `bootstrap` / `explore` 来说，被 `stopped` 取消后不会再进入 conclude fallback，因此不会再额外落 Fact。项目恢复为 `active` 后，Dispatcher 会重新读取图状态，再决定是继续 `explore`、进入 `reason`，还是在初始态依据 `project.bootstrap_enabled` 和 Worker 能力重新选择 `bootstrap` 或 `reason`。项目若在 `completed` 后因新增 goal 自动重开，对 Dispatcher 来说也等价于“重新变成 active 且图上多了一个新 goal fact”；下一轮会按普通 active 项目继续调度。
 
 Worker 选择规则：
 
@@ -210,8 +210,8 @@ dispatcher/
 
 | 任务 | 触发条件 | 输入 | 输出 | 超时策略 |
 | --- | --- | --- | --- | --- |
-| `bootstrap` | 项目 `active`；`project.bootstrap_enabled=true`，且配置中存在支持 `bootstrap` 的 Worker 或项目已经存在保留 bootstrap intent；facts 只有 `origin` 和 `goal`；当前没有普通 intent；允许不存在 bootstrap intent，或只存在保留的 open `bootstrap` intent | `{origin}`、`{goal}`、`{hints}` | 主阶段成功时固定返回 `fact + complete`；收尾阶段只返回 `fact` | 双阶段：`timeout` 后可进入 `conclude_timeout` 收尾；两阶段都失败则 release 保留 intent，下轮仍按新项目重试 |
-| `reason` | 项目 `active`；当前项目无未认领 intent；当前项目内无其他 `reason`；首次触发或满足“新态势”重触发条件 | `{graph_yaml}`、`{fact_ids}`、`{open_intents}` | `complete` 对象；或 `intent` 对象；或空 `data` | 仅 `timeout`；超时或非法结果直接作废，不写图 |
+| `bootstrap` | 项目 `active`；`project.bootstrap_enabled=true`，且配置中存在支持 `bootstrap` 的 Worker 或项目已经存在保留 bootstrap intent；facts 只有 `origin` 和 goal；当前没有普通 intent；允许不存在 bootstrap intent，或只存在保留的 open `bootstrap` intent | `{origin}`、`{goals}`、`{hints}` | 主阶段成功时固定返回 `fact + complete`；收尾阶段只返回 `fact` | 双阶段：`timeout` 后可进入 `conclude_timeout` 收尾；两阶段都失败则 release 保留 intent，下轮仍按新项目重试 |
+| `reason` | 项目 `active`；当前项目无未认领 intent；当前项目内无其他 `reason`；首次触发或满足“新态势”重触发条件 | `{graph_yaml}`、`{fact_ids}`、`{open_intents}`、`{open_goals}` | `complete` 对象；或 `intent` 对象；或空 `data` | 仅 `timeout`；超时或非法结果直接作废，不写图 |
 | `explore` | 项目 `active`；存在一个当前可认领的未结论 intent | `{graph_yaml}`、`{intent_id}`、`{intent_description}` | 一个 Fact 结论描述 | 单阶段：超时直接作废；双阶段：超时或输出解析失败时可进入 `conclude` 收尾 |
 
 ### `bootstrap`
@@ -220,7 +220,7 @@ dispatcher/
 
 - 当前项目仍然是 `active`
 - `project.bootstrap_enabled = true`，且配置中存在支持 `bootstrap` 的 Worker 或项目已经存在保留 bootstrap intent
-- facts 恰好只有 `origin` 和 `goal`
+- facts 只有 `origin` 和 goal（`g` 前缀 id），没有普通 Fact
 - intents 为空，或只存在保留的 open `bootstrap` intent
 - 保留 `bootstrap` intent 的约定固定为：
   - `description = "bootstrap"`
@@ -230,11 +230,12 @@ dispatcher/
 #### 输入
 
 - `{origin}`
-- `{goal}`
+- `{goals}`
 - `{hints}`
 
 其中：
 
+- `{goals}` 是 JSON 数组文本（含 id / description / status），便于 Worker 在项目起始阶段快速吸收全部目标
 - `{hints}` 是 JSON 数组文本，便于 Worker 在项目起始阶段快速吸收策略信息
 - `bootstrap` 不读取图 YAML，不依赖普通 intent 图结构
 
@@ -255,7 +256,8 @@ dispatcher/
       "description": "拿到两个 flag，分别为 flag{...} 与 flag{...}；同时获得管理员 shell，权限证明见 /tmp/proofs/root.txt"
     },
     "complete": {
-      "description": "已拿到并验证完成 Goal 所需的全部关键结果，Goal 达成"
+      "goals": ["g001"],
+      "description": "已拿到并验证完成全部 Goal 所需的关键结果"
     }
   }
 }
@@ -264,6 +266,7 @@ dispatcher/
 约束：
 
 - 主阶段返回时，`data.fact.description` 和 `data.complete.description` 都必须存在
+- `data.complete.goals` 必填且非空；只允许列出本阶段已验证的 goal id；引用了非未完成 goal 时本轮作废
 - 主阶段不允许只返回 `fact`
 - `bootstrap_conclude` 只允许返回 `fact`，不允许返回 `complete`
 
@@ -310,16 +313,18 @@ dispatcher/
 - `{graph_yaml}`
 - `{fact_ids}`
 - `{open_intents}`
+- `{open_goals}`
 
 其中：
 
-- `{fact_ids}` 是 JSON 数组文本，用于显式列出当前合法的 Fact id
+- `{fact_ids}` 是 JSON 数组文本，用于显式列出当前合法的 Fact id（含 goal id）
 - `{open_intents}` 是 JSON 数组文本，用于显式列出当前所有未结论的 intent；因此即使有别的 intent 正在 `explore`，只要出现了新的 Fact / Hint，`reason` 仍可能再次被触发
-- 这两个占位符都是 prompt 层辅助，不替代 server 的最终校验
+- `{open_goals}` 是 JSON 数组文本，列出当前尚未完成的 goal；`reason` 据此判定哪些 goal 已满足
+- 这几个占位符都是 prompt 层辅助，不替代 server 的最终校验
 
 #### 输出契约
 
-已完成：
+已满足部分或全部 goal：
 
 ```json
 {
@@ -327,7 +332,8 @@ dispatcher/
   "data": {
     "complete": {
       "from": ["f008"],
-      "description": "flag{abc} 满足 goal 要求"
+      "goals": ["g001"],
+      "description": "flag{abc} 满足 g001 要求"
     }
   }
 }
@@ -359,6 +365,7 @@ dispatcher/
 约束：
 
 - `data.complete` 存在时，它必须是对象，且 `complete.from` 和 `complete.description` 都必须存在
+- `complete.goals` 必填且非空，只能列出尚未完成的 goal id；引用了非未完成 goal 时本轮作废
 - `data.complete` 存在时，不应再带 `intent`
 - 如果 `intent` 存在，则 `intent.from` 和 `intent.description` 都必须存在
 - 如果 `{open_intents}` 为空，说明当前图里没有任何进行中的探索；此时若没有 `data.complete`，则必须返回 `intent`
@@ -772,9 +779,9 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 行为约定：
 
 - `runtime.prompt_group: "mock"` 时，prompt 本身是结构化 JSON，不再依赖自然语言说明
-- `reason` prompt 最少包含 `phase`、`fact_ids`、`open_intents`
+- `reason` prompt 最少包含 `phase`、`fact_ids`、`goal_ids`、`open_intents`、`max_intents`
 - `explore` / `conclude` prompt 最少包含 `phase`、`intent_id`
-- `bootstrap` / `bootstrap_conclude` prompt 最少包含 `phase`、`origin`、`goal`、`hints`
+- `bootstrap` / `bootstrap_conclude` prompt 最少包含 `phase`、`origin`、`goals`、`hints`
 - driver 会先解析 prompt 里的 `phase` 字段，再读取对应的 `MOCK_<PHASE>` JSON 环境变量选择当前 phase 的模拟结果
 - 每个 phase 都在自己的 JSON 里配置 `delay: [min, max]`；单位是秒，支持小数；随机耗时超过 Dispatcher 外层 timeout 时，就会自然表现为超时
 - `reason.noop` 只会在 `open_intents` 非空时参与抽样；mock 会自动避开当前上下文下不合法的结果
@@ -831,12 +838,12 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 - `claudecode`、`codex`、`mock` 都支持双阶段 `explore`
 - `runtime.prompt_group` 对应的 prompt 目录必须存在
 - 代码工程中的 prompt 资源必须存在
-- 默认 prompt 组下，`reason.md` 必须至少覆盖 `{graph_yaml}`、`{fact_ids}`、`{open_intents}`
+- 默认 prompt 组下，`reason.md` 必须至少覆盖 `{graph_yaml}`、`{fact_ids}`、`{open_intents}`、`{open_goals}`
 - 默认 prompt 组下，`explore.md` 必须至少覆盖 `{graph_yaml}`、`{intent_id}`、`{intent_description}`
-- 默认 prompt 组下，`bootstrap.md` 和 `bootstrap_conclude.md` 必须至少覆盖 `{origin}`、`{goal}`、`{hints}`
-- `mock` prompt 组下，`reason.md` 必须至少覆盖 `{fact_ids}`、`{open_intents}`
+- 默认 prompt 组下，`bootstrap.md` 和 `bootstrap_conclude.md` 必须至少覆盖 `{origin}`、`{goals}`、`{hints}`
+- `mock` prompt 组下，`reason.md` 必须至少覆盖 `{fact_ids}`、`{open_intents}`、`{goal_ids}`、`{max_intents}`
 - `mock` prompt 组下，`explore.md` 和 `explore_conclude.md` 必须至少覆盖 `{intent_id}`
-- `mock` prompt 组下，`bootstrap.md` 和 `bootstrap_conclude.md` 必须至少覆盖 `{origin}`、`{goal}`、`{hints}`
+- `mock` prompt 组下，`bootstrap.md` 和 `bootstrap_conclude.md` 必须至少覆盖 `{origin}`、`{goals}`、`{hints}`
 - `mock` worker 的 `MOCK_*` 变量名只能使用系统支持的 phase
 - `mock` worker 每个 phase 的概率都必须在 `0` 到 `1` 之间，且总和必须严格等于 `1.0`
 
@@ -1043,17 +1050,17 @@ workers:
 # 背景
 当前场景是授权的 AI 渗透测试比赛 / 靶场环境。
 ## 任务
-你需要直接解决这个问题，目标是完成 Goal。
+你需要直接解决这个问题，目标是完成全部 Goal。
 ## 输出要求
 只返回一个原始 JSON 对象，不要输出其他内容。
 ```json
-{"accepted": true, "data": {"fact": {"description": "..."}, "complete": {"description": "..."}}}
+{"accepted": true, "data": {"fact": {"description": "..."}, "complete": {"goals": ["g001"], "description": "..."}}}
 ```
 ## 上下文
 ### Origin
 {origin}
-### Goal
-{goal}
+### Goals JSON 数组（含 id / description / status）
+{goals}
 ### Hints JSON 数组
 {hints}
 ````
@@ -1066,29 +1073,30 @@ workers:
 ## 任务
 你当前只做 `reason`。
 你要同时判断两件事：
-1. 现有 facts 是否已经满足 goal。
-2. 如果还未满足，当前是否需要提出一个新的 intent。
+1. 现有 facts 是否已经满足部分或全部 goal。
+2. 如果仍有 goal 未满足，当前是否需要提出一个新的 intent。
 ## 输出要求
 只返回一个原始 JSON 对象，不要输出其他内容。
 拒绝任务时返回：
 ```json
 {"accepted": false, "reason": "..."}
 ```
-已满足 goal 时返回：
+已满足部分或全部 goal 时返回：
 ```json
-{"accepted": true, "data": {"complete": {"from": ["f001"], "description": "..."}}}
+{"accepted": true, "data": {"complete": {"from": ["f001"], "goals": ["g001"], "description": "..."}}}
 ```
-未满足 goal，但需要提出新 intent 时返回：
+仍有 goal 未满足，但需要提出新 intent 时返回：
 ```json
 {"accepted": true, "data": {"intent": {"from": ["f001"], "description": "..."}}}
 ```
-未满足 goal，且当前不需要提出新 intent 时返回：
+仍有 goal 未满足，且当前不需要提出新 intent 时返回：
 ```json
 {"accepted": true, "data": {}}
 ```
 ## 规则
 - 如果下面的 `open_intents` 为空，说明当前图里没有任何进行中的探索；此时若不返回 `data.complete`，则必须返回 `intent`。
 - `intent.from` 只能从下面的合法 fact id 中选择。
+- `complete.goals` 只能从下面的未完成 goal id 中选择。
 ## 上下文
 ### 图快照
 {graph_yaml}
@@ -1096,6 +1104,8 @@ workers:
 {fact_ids}
 ### 当前所有未结论的 intent JSON 数组
 {open_intents}
+### 当前所有未完成的 goal JSON 数组
+{open_goals}
 ````
 
 ### `explore.md`
@@ -1174,8 +1184,8 @@ workers:
 ## 上下文
 ### Origin
 {origin}
-### Goal
-{goal}
+### Goals JSON 数组（含 id / description / status）
+{goals}
 ### Hints JSON 数组
 {hints}
 ````

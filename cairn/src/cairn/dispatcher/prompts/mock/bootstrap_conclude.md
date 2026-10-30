@@ -1,6 +1,6 @@
 {
   "phase": "bootstrap_conclude",
   "origin": "{origin}",
-  "goal": "{goal}",
+  "goals": {goals},
   "hints": {hints}
 }

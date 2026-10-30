@@ -73,10 +73,14 @@ if outcome=="invalid_json":
     raise SystemExit(0)
 if phase=="reason":
     fact_ids=prompt.get("fact_ids") or []
+    goal_ids=prompt.get("goal_ids") or []
     max_i=prompt.get("max_intents",3)
-    from_ids=[random.choice(fact_ids)] if fact_ids else []
+    # completing a goal within the same intent requires that the goal not also
+    # appear as a source, so the completing-side from never includes open goals
+    source_ids=[f for f in fact_ids if f not in goal_ids]
+    from_ids=[random.choice(source_ids)] if source_ids else []
     if outcome=="complete":
-        print(json.dumps({"accepted":True,"data":{"complete":{"from":from_ids,"description":f"mock complete from {from_ids[0]}"}}}, ensure_ascii=False))
+        print(json.dumps({"accepted":True,"data":{"complete":{"from":from_ids,"goals":goal_ids,"description":f"mock complete from {from_ids[0] if from_ids else 'none'}"}}}, ensure_ascii=False))
     elif outcome=="intent":
         count=random.randint(1,max(1,max_i))
         intents=[]
@@ -93,8 +97,9 @@ if phase=="reason":
     raise SystemExit(0)
 
 if phase=="bootstrap":
+    open_goals=[g["id"] for g in (prompt.get("goals") or []) if isinstance(g,dict) and g.get("status")=="open"]
     if outcome=="complete":
-        print(json.dumps({"accepted":True,"data":{"fact":{"description":"mock fact for bootstrap"},"complete":{"description":"mock bootstrap complete from fact"}}}, ensure_ascii=False))
+        print(json.dumps({"accepted":True,"data":{"fact":{"description":"mock fact for bootstrap"},"complete":{"goals":open_goals,"description":"mock bootstrap complete for all open goals"}}}, ensure_ascii=False))
     elif outcome=="fact":
         print(json.dumps({"accepted":True,"data":{"fact":{"description":"mock fact-only bootstrap result"}}}, ensure_ascii=False))
     elif outcome=="rejected":

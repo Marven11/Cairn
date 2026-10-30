@@ -17,7 +17,7 @@
   </a>
 </p>
 
-Cairn is a general-purpose problem-solving engine. <br/>It defines no roles, no workflows. Given an origin and a goal, it searches for a path through an unknown state space. <br/>AI Penetration Testing is one such problem — and a proven one.
+Cairn is a general-purpose problem-solving engine. <br/>It defines no roles, no workflows. Given an origin and one or more goals, it searches for paths through an unknown state space. <br/>AI Penetration Testing is one such problem — and a proven one.
 
 <p>
   <a href="https://discord.gg/nDSy4NZVP" target="_blank" rel="noopener noreferrer">
@@ -56,7 +56,7 @@ The engine is built on a **Blackboard Architecture** with an explicit fact-inten
 | **Intent** | A declared direction of exploration, not yet executed |
 | **Hint** | Human judgment injected at any time; absorbed by agents on the next read |
 
-The graph grows from `origin` toward `goal`. Every new Fact is a stepping stone; every Intent is a step into the unknown.
+The graph grows from `origin` toward the goals. Goals are immutable facts (`g001`, `g002`, …) added at any time; a goal is complete once some intent's `to` references it, and the project completes when every goal is complete. Every new Fact is a stepping stone; every Intent is a step into the unknown.
 
 Agent Workers run an OODA loop — Observe the full graph, Orient to the current state, Decide on next intents, Act to explore — and write their findings back as new Facts. Workers have no fixed roles. Tasks are generated at runtime from the graph's current state, not from predefined job descriptions.
 
@@ -74,7 +74,7 @@ Three task types, all executed by the same Worker:
 | Task | What it does | Output |
 |------|-------------|--------|
 | **Bootstrap** | At project start, attempts to solve the problem directly | Fact + possible Complete |
-| **Reason** | Reads the full graph: is the goal met? What should be explored next? | Complete / new Intents / no-op |
+| **Reason** | Reads the full graph: which goals are met? What should be explored next? | Complete (marks goals) / new Intents / no-op |
 | **Explore** | Claims one Intent, executes the exploration, reports findings | One Fact |
 
 System architecture:
@@ -166,8 +166,12 @@ docker compose up --build
 This starts `cairn-server` on port `8000` and `cairn-dispatcher` once the server passes its health check. The dispatcher mounts `dispatch.yaml` from the project root and connects to Docker via the host socket. Data is persisted to `./datas/cairn/`.
  
 ### Manual
- 
+
 ```bash
+# Convert a pre-multi-goal database (goals were a single `goal` fact) to the
+# current schema; writes a new database, never touches the source
+uv run --project cairn cairn migrate-db --db-path ~/.local/share/cairn/cairn.db --target migrated.db
+
 # Start the server
 uv run --project cairn cairn serve
  

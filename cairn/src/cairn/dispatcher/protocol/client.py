@@ -9,7 +9,7 @@ from pydantic import TypeAdapter
 import requests
 from requests.adapters import HTTPAdapter
 
-from cairn.server.models import Intent, ProjectDetail, ProjectSummary, Settings
+from cairn.server.models import ProjectDetail, ProjectSummary, Settings
 
 LOG = logging.getLogger(__name__)
 
@@ -111,14 +111,25 @@ class CairnClient:
         return self._request_json(
             "POST",
             f"/projects/{project_id}/intents/{intent_id}/conclude",
-            json={"worker": worker, "description": description},
+            json={
+                "worker": worker,
+                "description": description,
+                "completed_goals": [],
+            },
         )
 
-    def complete(self, project_id: str, from_ids: list[str], description: str, worker: str) -> ApiResult:
+    def complete(
+        self,
+        project_id: str,
+        from_ids: list[str],
+        description: str,
+        worker: str,
+        goals: list[str],
+    ) -> ApiResult:
         return self._request_json(
             "POST",
             f"/projects/{project_id}/complete",
-            json={"from": from_ids, "description": description, "worker": worker},
+            json={"from": from_ids, "description": description, "worker": worker, "goals": goals},
         )
 
     def create_intent(self, project_id: str, from_ids: list[str], description: str, creator: str) -> ApiResult:

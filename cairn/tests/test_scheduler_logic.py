@@ -38,6 +38,8 @@ def _summary(project_id: str, status: str) -> ProjectSummary:
         working_intent_count=0,
         unclaimed_intent_count=0,
         hint_count=0,
+        goal_count=1,
+        completed_goal_count=0,
     )
 
 
@@ -49,7 +51,7 @@ def test_reason_trigger_detects_new_facts_and_open_intent_completion() -> None:
         hint_count=1,
         open_intent_count=1,
     )
-    project.facts.append(Fact(id="f002", description="new"))
+    project.facts.append(Fact(id="f002", description="new", created_at="2026-01-01T00:00:03Z"))
     project.intents = []
 
     assert loop._reason_trigger(project) == "facts:3->4,open_intents:1->0"
@@ -129,7 +131,7 @@ def test_new_fact_dispatches_reason_before_unclaimed_explore_intent() -> None:
     loop.futures = {}
     project = make_project(intents=[make_intent()])
     project.intents[0].worker = None
-    project.facts.append(Fact(id="f002", description="new"))
+    project.facts.append(Fact(id="f002", description="new", created_at="2026-01-01T00:00:03Z"))
     loop.reason_checkpoints["proj_001"] = ReasonCheckpoint(
         fact_count=3,
         hint_count=1,

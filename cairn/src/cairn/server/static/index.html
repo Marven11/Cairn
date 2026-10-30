@@ -334,6 +334,12 @@
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3"/></svg>
               <span x-text="p.intent_count"></span>
             </span>
+            <template x-if="p.goal_count > 0">
+              <span class="flex items-center gap-1" :class="p.completed_goal_count >= p.goal_count ? 'text-teal-500' : 'text-rose-400'">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
+                <span x-text="`${p.completed_goal_count}/${p.goal_count}`"></span>
+              </span>
+            </template>
             <template x-if="p.working_intent_count > 0">
               <span class="flex items-center gap-1 text-amber-500">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/></svg>
@@ -374,10 +380,10 @@
                 </button>
               </template>
               <template x-if="p.status === 'completed'">
-                <button type="button" @click.stop="openReopenProject(p.id, p.title)"
+                <button type="button" @click.stop="openAddGoal(p.id, p.title)"
                   class="px-2 py-1 rounded-lg border border-sky-200 text-[11px] text-sky-600 hover:bg-sky-50 transition flex items-center gap-1">
-                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.708"/><path d="M3 3v6h6"/></svg>
-                  Reopen
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
+                  Add Goal
                 </button>
               </template>
               <button type="button" @click.stop="deleteProjectById(p.id, p.title)"
@@ -416,6 +422,7 @@
     <div class="flex-1"></div>
     <div class="flex items-center gap-4 text-xs text-slate-400">
       <span x-text="`${project.facts.length} facts`"></span>
+      <span x-text="goalProgressLabel()"></span>
       <span x-text="`${project.intents.length} intents`"></span>
     </div>
     <div class="flex items-center gap-1.5">
@@ -461,10 +468,10 @@
         </button>
       </template>
       <template x-if="!replay.active && project.project.status === 'completed'">
-        <button @click="openReopenProject(project.project.id, project.project.title)"
+        <button @click="openAddGoal(project.project.id, project.project.title)"
           class="px-2.5 py-1 rounded-lg border border-sky-200 text-xs text-sky-600 hover:bg-sky-50 transition flex items-center gap-1.5">
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.708"/><path d="M3 3v6h6"/></svg>
-          Reopen
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
+          Add Goal
         </button>
       </template>
       <button x-show="!replay.active" @click="deleteProject()" class="px-2.5 py-1 rounded-lg border border-rose-200 text-xs text-rose-500 hover:bg-rose-50 hover:text-rose-600 transition flex items-center gap-1.5">
@@ -540,11 +547,16 @@
             Complete
           </button>
         </div>
-        <div class="flex gap-1.5" x-show="projectCanWriteHints()">
+        <div class="flex gap-1.5" x-show="!replay.active">
           <button @click="openHintModal()"
             class="px-3 py-1.5 bg-white/90 backdrop-blur border border-amber-200 text-amber-600 rounded-lg shadow-sm text-xs font-medium hover:bg-amber-50 transition flex items-center gap-1">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547Z"/></svg>
             Hint
+          </button>
+          <button @click="openAddGoal(selectedProjectId, project.project.title)"
+            class="px-3 py-1.5 bg-white/90 backdrop-blur border border-sky-200 text-sky-600 rounded-lg shadow-sm text-xs font-medium hover:bg-sky-50 transition flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 8v8M8 12h8"/></svg>
+            Goal
           </button>
         </div>
         <div class="flex gap-1.5" x-show="projectIsActive()">
@@ -602,12 +614,8 @@
                   <div class="flex items-center justify-between gap-3">
                     <div class="flex items-center gap-2 min-w-0">
                       <span class="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold shrink-0"
-                        :class="{
-                          'bg-teal-50 text-teal-700': fact.id === 'origin',
-                          'bg-rose-50 text-rose-600': fact.id === 'goal',
-                          'bg-brand-50 text-brand-700': fact.id !== 'origin' && fact.id !== 'goal'
-                        }" x-text="fact.id"></span>
-                      <span class="text-[11px] text-slate-400 uppercase tracking-wider">Fact</span>
+                        :class="factBadgeClass(fact.id)" x-text="fact.id"></span>
+                      <span class="text-[11px] text-slate-400 uppercase tracking-wider" x-text="isGoalId(fact.id) ? 'Goal' : 'Fact'"></span>
                     </div>
                     <button type="button" @click="removeFactSelection(fact.id)"
                       class="text-[11px] text-slate-400 hover:text-slate-600 transition">Remove</button>
@@ -619,12 +627,13 @@
                     <template x-if="fact.id === 'origin'">
                       <p>Project starting point</p>
                     </template>
-                    <template x-if="fact.id === 'goal'">
-                      <p>Project target fact</p>
+                    <template x-if="isGoalId(fact.id)">
+                      <p x-text="isGoalCompleted(fact.id) ? `Goal completed by ${getProducingIntent(fact.id) ? getProducingIntent(fact.id).id : '?'}` : 'Goal open — not yet completed'"></p>
                     </template>
-                    <template x-if="fact.id !== 'origin' && fact.id !== 'goal' && getProducingIntent(fact.id)">
+                    <template x-if="fact.id !== 'origin' && !isGoalId(fact.id) && getProducingIntent(fact.id)">
                       <p x-text="`Produced by ${getProducingIntent(fact.id).id} from ${getProducingIntent(fact.id).from.join(', ')}`"></p>
                     </template>
+                    <p x-text="`Created ${formatDate(fact.created_at)}`"></p>
                   </div>
                 </div>
               </article>
@@ -636,12 +645,8 @@
             <div class="px-4 py-3 border-b border-slate-100 bg-slate-50/80">
               <div class="flex items-center gap-2">
                 <span class="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold"
-                  :class="{
-                    'bg-teal-50 text-teal-700': selectedFactId() === 'origin',
-                    'bg-rose-50 text-rose-600': selectedFactId() === 'goal',
-                    'bg-brand-50 text-brand-700': selectedFactId() !== 'origin' && selectedFactId() !== 'goal'
-                  }" x-text="selectedFactId()"></span>
-                <span class="text-[11px] text-slate-400 font-medium uppercase tracking-wider">Fact</span>
+                  :class="factBadgeClass(selectedFactId())" x-text="selectedFactId()"></span>
+                <span class="text-[11px] text-slate-400 font-medium uppercase tracking-wider" x-text="isGoalId(selectedFactId()) ? 'Goal' : 'Fact'"></span>
               </div>
             </div>
             <div class="p-4 space-y-4">
@@ -651,12 +656,14 @@
                   <div class="pt-4 border-t border-slate-100">
                     <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-3">Origin</p>
                     <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Role</span><span class="text-slate-600 text-right break-words">Project starting point</span></div>
+                    <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Created</span><span class="text-slate-600 text-right break-words" x-text="formatDate(selectedFactRecord().created_at)"></span></div>
                   </div>
                 </template>
-                <template x-if="selectedFactId() === 'goal'">
+                <template x-if="isGoalId(selectedFactId())">
                   <div class="pt-4 border-t border-slate-100 space-y-3">
                     <p class="text-[10px] font-semibold text-rose-500 uppercase tracking-widest">Goal</p>
-                    <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Role</span><span class="text-slate-600 text-right break-words">Project target fact</span></div>
+                    <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Status</span><span class="font-medium text-right break-words" :class="isGoalCompleted(selectedFactId()) ? 'text-teal-600' : 'text-rose-500'" x-text="isGoalCompleted(selectedFactId()) ? 'Completed' : 'Open'"></span></div>
+                    <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Created</span><span class="text-slate-600 text-right break-words" x-text="formatDate(selectedFactRecord().created_at)"></span></div>
                     <template x-if="selectedFactProducingIntent()">
                       <div class="pt-1 space-y-3">
                         <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Completed By</span><span class="font-mono text-slate-600 text-right break-all" x-text="selectedFactProducingIntent().id"></span></div>
@@ -664,9 +671,10 @@
                         <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Concluded</span><span class="text-slate-600 text-right break-words" x-text="formatTime(selectedFactProducingIntent().concluded_at || selectedFactProducingIntent().created_at)"></span></div>
                       </div>
                     </template>
+                    <p class="text-[11px] text-slate-400">Goals are immutable — to correct one, add a new goal.</p>
                   </div>
                 </template>
-                <template x-if="selectedFactId() !== 'origin' && selectedFactId() !== 'goal' && selectedFactProducingIntent()">
+                <template x-if="selectedFactId() !== 'origin' && !isGoalId(selectedFactId()) && selectedFactProducingIntent()">
                   <div class="pt-4 border-t border-slate-100 space-y-3">
                     <p class="text-[10px] font-semibold text-brand-500 uppercase tracking-widest">Produced By</p>
                     <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Intent</span><span class="font-mono text-slate-600 text-right break-all" x-text="selectedFactProducingIntent().id"></span></div>
@@ -674,6 +682,7 @@
                     <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Creator</span><span class="text-slate-600 text-right break-all" x-text="selectedFactProducingIntent().creator"></span></div>
                     <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Worker</span><span class="text-slate-600 text-right break-all" x-text="selectedFactProducingIntent().worker || '—'"></span></div>
                     <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Concluded</span><span class="text-slate-600 text-right break-words" x-text="formatTime(selectedFactProducingIntent().concluded_at || selectedFactProducingIntent().created_at)"></span></div>
+                    <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Created</span><span class="text-slate-600 text-right break-words" x-text="formatDate(selectedFactRecord().created_at)"></span></div>
                   </div>
                 </template>
               </div>
@@ -692,7 +701,7 @@
               <p class="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap break-words" x-text="selectedIntentRecord().description"></p>
               <div class="pt-4 border-t border-slate-100 space-y-3 text-xs">
                 <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">From</span><span class="font-mono text-slate-600 text-right break-all" x-text="selectedIntentRecord().from.join(', ')"></span></div>
-                <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">To</span><span class="font-mono text-slate-600 text-right break-all" x-text="selectedIntentRecord().to || '—'"></span></div>
+                <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">To</span><span class="font-mono text-slate-600 text-right break-all" x-text="selectedIntentRecord().to && selectedIntentRecord().to.length ? selectedIntentRecord().to.join(', ') : '—'"></span></div>
                 <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Creator</span><span class="text-slate-600 text-right break-all" x-text="selectedIntentRecord().creator"></span></div>
                 <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Worker</span><span class="text-slate-600 text-right break-all" x-text="selectedIntentRecord().worker || '—'"></span></div>
                 <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Heartbeat</span><span class="text-slate-600 text-right break-words" x-text="selectedIntentRecord().last_heartbeat_at ? formatTime(selectedIntentRecord().last_heartbeat_at) : '—'"></span></div>
@@ -878,8 +887,8 @@
 <!-- Complete Project -->
 <div x-show="showCompleteModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center overlay" @click.self="showCompleteModal = false">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 border border-slate-200/60" @click.stop>
-    <h3 class="text-base font-semibold text-slate-700 mb-1">Complete Project</h3>
-    <p class="text-xs text-slate-400 mb-4">Mark project as completed</p>
+    <h3 class="text-base font-semibold text-slate-700 mb-1">Complete Goals</h3>
+    <p class="text-xs text-slate-400 mb-4">Mark goals as satisfied by the selected facts</p>
     <div class="space-y-3">
       <div>
         <label class="text-[11px] text-slate-400 mb-1 block font-medium">From facts</label>
@@ -889,14 +898,31 @@
           </template>
         </div>
       </div>
-      <textarea x-model="completeForm.description" placeholder="Why is the goal met?" rows="2" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400 transition placeholder:text-slate-300"></textarea>
+      <div>
+        <label class="text-[11px] text-slate-400 mb-1 block font-medium">Goals to complete</label>
+        <div class="w-full px-3 py-2 border border-slate-200 rounded-xl bg-slate-50 max-h-44 overflow-y-auto space-y-1.5">
+          <template x-if="openGoalFacts().length === 0">
+            <p class="text-xs text-slate-400 py-1">No open goals — add a goal instead</p>
+          </template>
+          <template x-for="goal in openGoalFacts()" :key="`complete-goal-${goal.id}`">
+            <label class="flex items-start gap-2 px-2 py-1.5 rounded-lg hover:bg-white cursor-pointer transition">
+              <input type="checkbox" :value="goal.id" x-model="completeForm.goals" class="mt-0.5 h-4 w-4 rounded border-slate-300 text-rose-500 focus:ring-rose-200 shrink-0">
+              <span class="min-w-0">
+                <span class="font-mono text-[11px] font-bold text-rose-600" x-text="goal.id"></span>
+                <span class="ml-1.5 text-xs text-slate-600 break-words" x-text="goal.description"></span>
+              </span>
+            </label>
+          </template>
+        </div>
+      </div>
+      <textarea x-model="completeForm.description" placeholder="Why are these goals met?" rows="2" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400 transition placeholder:text-slate-300"></textarea>
       <div class="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-500">
         Actor: <span class="font-medium text-slate-700" x-text="actorName()"></span>
       </div>
     </div>
     <div class="flex justify-end gap-2 mt-5">
       <button @click="showCompleteModal = false" class="px-4 py-2 text-sm text-slate-500 hover:bg-slate-50 rounded-xl transition">Cancel</button>
-      <button @click="completeProject()" :disabled="selectedFacts.length === 0 || !completeForm.description"
+      <button @click="completeProject()" :disabled="selectedFacts.length === 0 || completeForm.goals.length === 0 || !completeForm.description"
         class="px-5 py-2 text-sm bg-teal-500 text-white rounded-xl font-medium hover:bg-teal-600 transition disabled:opacity-30 shadow-sm shadow-teal-200">Complete</button>
     </div>
   </div>
@@ -920,21 +946,22 @@
 </div>
 </div>
 
-<!-- Reopen -->
-<div x-show="showReopenModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center overlay" @click.self="showReopenModal = false">
+<!-- Add Goal -->
+<div x-show="showAddGoalModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center overlay" @click.self="showAddGoalModal = false">
   <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 border border-slate-200/60" @click.stop>
-    <h3 class="text-base font-semibold text-slate-700 mb-1">Reopen Project</h3>
-    <p class="text-xs text-slate-400 mb-4" x-text="projectLabel(reopenForm.projectId, reopenForm.projectTitle)"></p>
+    <h3 class="text-base font-semibold text-slate-700 mb-1">Add Goal</h3>
+    <p class="text-xs text-slate-400 mb-4" x-text="projectLabel(addGoalForm.projectId, addGoalForm.projectTitle)"></p>
     <div class="space-y-3">
-      <textarea x-model="reopenForm.description" placeholder="Why is this project not actually complete?" rows="3" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400 transition placeholder:text-slate-300"></textarea>
+      <textarea x-model="addGoalForm.description" placeholder="New goal — goals are immutable; to correct a previous goal, add a new one" rows="3" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400 transition placeholder:text-slate-300"></textarea>
       <div class="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-500">
         Actor: <span class="font-medium text-slate-700" x-text="actorName()"></span>
       </div>
+      <p class="text-[11px] text-slate-400" x-show="addGoalForm.reopens">Adding a goal to a completed project automatically reopens it.</p>
     </div>
     <div class="flex justify-end gap-2 mt-5">
-      <button @click="showReopenModal = false" class="px-4 py-2 text-sm text-slate-500 hover:bg-slate-50 rounded-xl transition">Cancel</button>
-      <button @click="reopenProject()" :disabled="!reopenForm.projectId || !reopenForm.description"
-        class="px-5 py-2 text-sm bg-sky-500 text-white rounded-xl font-medium hover:bg-sky-600 transition disabled:opacity-30 shadow-sm shadow-sky-200">Reopen</button>
+      <button @click="showAddGoalModal = false" class="px-4 py-2 text-sm text-slate-500 hover:bg-slate-50 rounded-xl transition">Cancel</button>
+      <button @click="addGoal()" :disabled="!addGoalForm.projectId || !addGoalForm.description"
+        class="px-5 py-2 text-sm bg-sky-500 text-white rounded-xl font-medium hover:bg-sky-600 transition disabled:opacity-30 shadow-sm shadow-sky-200">Add Goal</button>
     </div>
   </div>
 </div>
@@ -1092,7 +1119,7 @@ function cairnApp() {
     showConcludeModal: false,
     showCompleteModal: false,
     showHintModal: false,
-    showReopenModal: false,
+    showAddGoalModal: false,
     showRenameModal: false,
     showLocalPrefs: false,
     showSettings: false,
@@ -1104,9 +1131,9 @@ function cairnApp() {
     newProject: { title: '', origin: '', goal: '', bootstrap: true, hints: [{ content: '' }] },
     intentForm: { description: '' },
     concludeForm: { description: '', intentId: '' },
-    completeForm: { description: '' },
+    completeForm: { description: '', goals: [] },
     hintForm: { content: '' },
-    reopenForm: { projectId: '', projectTitle: '', description: '' },
+    addGoalForm: { projectId: '', projectTitle: '', description: '', reopens: false },
     renameForm: { projectId: '', originalTitle: '', title: '' },
     localPrefs: { actor_name: 'Human', layout_mode: 'dagre_tb' },
     settingsForm: { intent_timeout: 5, reason_timeout: 5 },
@@ -1290,8 +1317,58 @@ function cairnApp() {
         && Array.isArray(intent.from)
         && intent.from.length === 1
         && intent.from[0] === 'origin'
-        && intent.to === null,
+        && this.isOpenIntent(intent),
       );
+    },
+
+    isOpenIntent(intent) {
+      return Boolean(intent) && intent.to.length === 0;
+    },
+
+    isGoalId(factId) {
+      return /^g\d+$/.test(String(factId || ''));
+    },
+
+    goalFacts() {
+      if (!this.project) return [];
+      return this.project.facts.filter(fact => this.isGoalId(fact.id));
+    },
+
+    completedGoalIds() {
+      if (!this.project) return new Set();
+      const completed = new Set();
+      for (const intent of this.project.intents) {
+        for (const target of intent.to) {
+          if (this.isGoalId(target)) completed.add(target);
+        }
+      }
+      return completed;
+    },
+
+    isGoalCompleted(goalId) {
+      return this.completedGoalIds().has(goalId);
+    },
+
+    openGoalFacts() {
+      const completed = this.completedGoalIds();
+      return this.goalFacts().filter(goal => !completed.has(goal.id));
+    },
+
+    goalProgressLabel() {
+      if (!this.project) return '';
+      const goals = this.goalFacts();
+      if (goals.length === 0) return '0 goals';
+      const completed = this.completedGoalIds();
+      const done = goals.filter(goal => completed.has(goal.id)).length;
+      return `${done}/${goals.length} goals`;
+    },
+
+    factBadgeClass(factId) {
+      if (factId === 'origin') return 'bg-teal-50 text-teal-700';
+      if (this.isGoalId(factId)) {
+        return this.isGoalCompleted(factId) ? 'bg-rose-100 text-rose-400' : 'bg-rose-50 text-rose-600';
+      }
+      return 'bg-brand-50 text-brand-700';
     },
 
     openIntentNodeType(intent) {
@@ -1325,7 +1402,7 @@ function cairnApp() {
     },
 
     canActOnSelectedFacts() {
-      return this.projectIsActive() && this.selectedFacts.length > 0 && !this.selectedFacts.includes('goal');
+      return this.projectIsActive() && this.selectedFacts.length > 0;
     },
 
     async loadProjects() {
@@ -1366,7 +1443,7 @@ function cairnApp() {
       if (/^\s*\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2})\s*$/.test(value)) return `<span style="color:#b45309">${escaped}</span>`;
       if (/^\s*(true|false|null|~)\s*$/i.test(value)) return `<span style="color:#b91c1c">${escaped}</span>`;
       if (/^\s*-?\d+(\.\d+)?\s*$/.test(value)) return `<span style="color:#0f766e">${escaped}</span>`;
-      if (/^\s*(origin|goal|f\d+|i\d+)\s*$/i.test(value)) return `<span style="color:#6d28d9">${escaped}</span>`;
+      if (/^\s*(origin|goal|g\d+|f\d+|i\d+)\s*$/i.test(value)) return `<span style="color:#6d28d9">${escaped}</span>`;
       return `<span style="color:#0f172a">${escaped}</span>`;
     },
 
@@ -1656,10 +1733,36 @@ function cairnApp() {
       }
     },
 
-    openReopenProject(projectId, projectTitle = '') {
+    openAddGoal(projectId, projectTitle = '') {
       if (!projectId) return;
-      this.reopenForm = { projectId, projectTitle, description: '' };
-      this.showReopenModal = true;
+      const status = this.project && this.project.project.id === projectId
+        ? this.project.project.status
+        : (this.projects.find(p => p.id === projectId)?.status || '');
+      this.addGoalForm = { projectId, projectTitle, description: '', reopens: status === 'completed' };
+      this.showAddGoalModal = true;
+    },
+
+    async addGoal() {
+      const projectId = this.addGoalForm.projectId || this.selectedProjectId;
+      if (!projectId) return;
+      const wasCompleted = this.addGoalForm.reopens;
+      try {
+        const actor = this.actorName();
+        const result = await this.api('POST', `/projects/${projectId}/goals`, {
+          description: this.addGoalForm.description,
+          creator: actor,
+        });
+        this.showAddGoalModal = false;
+        this.addGoalForm = { projectId: '', projectTitle: '', description: '', reopens: false };
+        await this.loadProjects();
+        if (this.selectedProjectId === projectId && this.view === 'graph') {
+          await this.loadProject(projectId);
+          this.updateGraph();
+        }
+        this.showToast(wasCompleted ? 'Goal added — project reopened' : 'Goal added');
+      } catch (e) {
+        this.showToast(e.message, 'error');
+      }
     },
 
     openRenameProject(projectId, projectTitle = '') {
@@ -1717,8 +1820,9 @@ function cairnApp() {
       if (type === 'reason_started') return 1.6;
       if (type === 'intent_declared') return 1.05;
       if (type === 'intent_running') return 0.75;
+      if (type === 'goal_completed') return 1.4;
       if (type === 'intent_concluded' || type === 'project_completed') return 1.6;
-      if (type === 'project_created' || type === 'hint_added') return 0.8;
+      if (type === 'project_created' || type === 'hint_added' || type === 'goal_declared') return 0.8;
       return 1.0;
     },
 
@@ -1749,14 +1853,13 @@ function cairnApp() {
 
     buildInitialReplayProject(sourceProject) {
       const origin = sourceProject.facts.find(fact => fact.id === 'origin');
-      const goal = sourceProject.facts.find(fact => fact.id === 'goal');
       return {
         project: {
           ...this.cloneData(sourceProject.project),
           status: 'active',
           reason: null,
         },
-        facts: [origin, goal].filter(Boolean).map(fact => this.cloneData(fact)),
+        facts: origin ? [this.cloneData(origin)] : [],
         intents: [],
         hints: [],
       };
@@ -1821,6 +1924,7 @@ function cairnApp() {
       if (frames.length > 0) {
         frames[frames.length - 1].project.project.status = sourceProject.project.status;
         frames[frames.length - 1].project.project.reason = this.cloneData(sourceProject.project.reason);
+        frames[frames.length - 1].project.project.completed_at = sourceProject.project.completed_at ?? null;
       }
       return frames;
     },
@@ -1845,6 +1949,18 @@ function cairnApp() {
         return;
       }
 
+      if (event.type === 'goal_declared') {
+        const goal = sourceProject.facts.find(item => item.id === event.targetId);
+        if (goal && !replayProject.facts.some(item => item.id === goal.id)) {
+          replayProject.facts.push(this.cloneData(goal));
+        }
+        if (replayProject.project.status === 'completed') {
+          replayProject.project.status = 'active';
+          replayProject.project.completed_at = null;
+        }
+        return;
+      }
+
       if (event.type === 'reason_started') {
         replayProject.project.reason = {
           worker: event.actor || 'reasoner',
@@ -1862,7 +1978,7 @@ function cairnApp() {
           replayProject.intents.push({
             id: sourceIntent.id,
             from: [...sourceIntent.from],
-            to: null,
+            to: [],
             description: sourceIntent.description,
             creator: sourceIntent.creator,
             worker: null,
@@ -1883,12 +1999,12 @@ function cairnApp() {
         return;
       }
 
-      if (event.type !== 'intent_concluded' && event.type !== 'project_completed') return;
+      if (event.type !== 'intent_concluded' && event.type !== 'project_completed' && event.type !== 'goal_completed') return;
       if (!sourceIntent) return;
 
       const replayIntent = replayProject.intents.find(intent => intent.id === sourceIntent.id);
       if (replayIntent) {
-        replayIntent.to = sourceIntent.to;
+        replayIntent.to = [...sourceIntent.to];
         replayIntent.worker = sourceIntent.worker || sourceIntent.creator;
         replayIntent.last_heartbeat_at = sourceIntent.last_heartbeat_at;
         replayIntent.concluded_at = sourceIntent.concluded_at;
@@ -1896,10 +2012,14 @@ function cairnApp() {
 
       if (event.type === 'project_completed') {
         replayProject.project.status = 'completed';
+        replayProject.project.completed_at = sourceIntent.concluded_at;
         return;
       }
 
-      const producedFact = sourceProject.facts.find(fact => fact.id === sourceIntent.to);
+      if (event.type === 'goal_completed') return;
+
+      const producedFactId = sourceIntent.to.find(target => !this.isGoalId(target));
+      const producedFact = sourceProject.facts.find(fact => fact.id === producedFactId);
       if (producedFact && !replayProject.facts.some(fact => fact.id === producedFact.id)) {
         replayProject.facts.push(this.cloneData(producedFact));
       }
@@ -2044,28 +2164,6 @@ function cairnApp() {
       });
     },
 
-    async reopenProject() {
-      const projectId = this.reopenForm.projectId || this.selectedProjectId;
-      if (!projectId) return;
-      try {
-        const actor = this.actorName();
-        await this.api('POST', `/projects/${projectId}/reopen`, {
-          description: this.reopenForm.description,
-          creator: actor,
-        });
-        this.showReopenModal = false;
-        this.reopenForm = { projectId: '', projectTitle: '', description: '' };
-        await this.loadProjects();
-        if (this.selectedProjectId === projectId && this.view === 'graph') {
-          await this.loadProject(projectId);
-          this.updateGraph();
-        }
-        this.showToast('Project reopened');
-      } catch (e) {
-        this.showToast(e.message, 'error');
-      }
-    },
-
     async openProject(id) {
       if (this.replay.active) {
         this.stopReplayTimer();
@@ -2141,7 +2239,9 @@ function cairnApp() {
       const nodes = [];
       const edges = [];
       for (const f of this.project.facts) {
-        const nodeType = f.id === 'origin' ? 'origin' : f.id === 'goal' ? 'goal' : 'fact';
+        let nodeType = 'fact';
+        if (f.id === 'origin') nodeType = 'origin';
+        else if (this.isGoalId(f.id)) nodeType = this.isGoalCompleted(f.id) ? 'goal_done' : 'goal';
         const label = this.summarizeFactLabel(f);
         const size = this.factNodeSize(label, nodeType);
         nodes.push({ data: {
@@ -2155,9 +2255,11 @@ function cairnApp() {
       }
       for (const intent of this.project.intents) {
         const lbl = intent.description;
-        if (intent.to) {
+        if (intent.to.length > 0) {
           for (const src of intent.from) {
-            edges.push({ data: { id: `${intent.id}_${src}`, source: src, target: intent.to, intentId: intent.id, label: lbl, status: 'concluded' }});
+            for (const target of intent.to) {
+              edges.push({ data: { id: `${intent.id}_${src}_${target}`, source: src, target, intentId: intent.id, label: lbl, status: 'concluded' }});
+            }
           }
         } else {
           const phId = `_ph_${intent.id}`;
@@ -2176,7 +2278,9 @@ function cairnApp() {
             edges.push({ data: { id: `${intent.id}_${src}`, source: src, target: phId, intentId: intent.id, label: lbl, status: nodeType }});
           }
           if (this.isBootstrapIntent(intent)) {
-            edges.push({ data: { id: `${intent.id}_goal`, source: phId, target: 'goal', intentId: intent.id, label: '', status: nodeType, edgeType: 'bootstrap_scope' }});
+            for (const goal of this.openGoalFacts()) {
+              edges.push({ data: { id: `${intent.id}_${goal.id}_scope`, source: phId, target: goal.id, intentId: intent.id, label: '', status: nodeType, edgeType: 'bootstrap_scope' }});
+            }
           }
         }
       }
@@ -2208,6 +2312,7 @@ function cairnApp() {
       return [
         { selector: 'node[nodeType="origin"]', style: { ...common, shape:'round-rectangle','background-color':'#14b8a6',label:'data(label)',color:'#fff','font-size':'11px','font-weight':'bold','text-wrap':'wrap','text-max-width':'92px','text-overflow-wrap':'anywhere',width:'data(width)',height:'data(height)','border-width':0 }},
         { selector: 'node[nodeType="goal"]', style: { ...common, shape:'round-rectangle','background-color':'#f43f5e',label:'data(label)',color:'#fff','font-size':'11px','font-weight':'bold','text-wrap':'wrap','text-max-width':'92px','text-overflow-wrap':'anywhere',width:'data(width)',height:'data(height)','border-width':0 }},
+        { selector: 'node[nodeType="goal_done"]', style: { ...common, shape:'round-rectangle','background-color':'#fda4af',label:'data(label)',color:'#fff','font-size':'11px','font-weight':'bold','text-wrap':'wrap','text-max-width':'92px','text-overflow-wrap':'anywhere',width:'data(width)',height:'data(height)','border-width':0 }},
         { selector: 'node[nodeType="fact"]', style: { ...common, shape:'round-rectangle','background-color':'#6366f1',label:'data(label)',color:'#fff','font-size':'10px','font-weight':'bold','text-wrap':'wrap','text-max-width':'116px','text-overflow-wrap':'anywhere',width:'data(width)',height:'data(height)','border-width':0 }},
         { selector: 'node[nodeType="in_progress"]', style: { ...common, shape:'ellipse','background-color':'#f59e0b','background-opacity':0.8,label:'?',color:'#fff','font-size':'11px','font-weight':'bold',width:22,height:22,'border-width':2,'border-color':'#d97706' }},
         { selector: 'node[nodeType="unclaimed"]', style: { ...common, shape:'ellipse','background-color':'#cbd5e1','background-opacity':0.5,label:'?',color:'#94a3b8','font-size':'11px','font-weight':'bold',width:20,height:20,'border-width':1.5,'border-color':'#94a3b8','border-style':'dashed' }},
@@ -2327,7 +2432,7 @@ function cairnApp() {
         return intent ? this.anchorPositionFromIds(intent.from, previousPositions, 32) : null;
       }
 
-      const producingIntent = this.project.intents.find(item => item.to === nodeData.id);
+      const producingIntent = this.project.intents.find(item => item.to.includes(nodeData.id));
       if (!producingIntent) return null;
       const placeholderPosition = previousPositions.get(`_ph_${producingIntent.id}`);
       if (placeholderPosition) return placeholderPosition;
@@ -2470,7 +2575,6 @@ function cairnApp() {
 
     summarizeFactLabel(fact) {
       if (fact.id === 'origin') return 'Origin';
-      if (fact.id === 'goal') return 'Goal';
       const normalized = fact.description.replace(/\s+/g, ' ').trim();
       const chars = Array.from(normalized);
       if (chars.length <= 24) return normalized || fact.id;
@@ -2724,7 +2828,7 @@ function cairnApp() {
         if (upstreamFacts.has(factId) || !this.project) return;
         upstreamFacts.add(factId);
         for (const intent of this.project.intents) {
-          if (intent.to === factId) walkIntentUpstream(intent.id);
+          if (intent.to.includes(factId)) walkIntentUpstream(intent.id);
         }
       };
 
@@ -2741,15 +2845,24 @@ function cairnApp() {
     },
 
     collectIntentElements(intent, nodeIds, edgeIds) {
-      if (intent.to) nodeIds.add(intent.to);
-      else nodeIds.add(`_ph_${intent.id}`);
-      for (const sourceId of intent.from) {
-        nodeIds.add(sourceId);
-        edgeIds.add(`${intent.id}_${sourceId}`);
-      }
-      if (this.isBootstrapIntent(intent)) {
-        nodeIds.add('goal');
-        edgeIds.add(`${intent.id}_goal`);
+      if (intent.to.length > 0) {
+        for (const target of intent.to) nodeIds.add(target);
+        for (const sourceId of intent.from) {
+          for (const target of intent.to) {
+            edgeIds.add(`${intent.id}_${sourceId}_${target}`);
+          }
+        }
+      } else {
+        nodeIds.add(`_ph_${intent.id}`);
+        for (const sourceId of intent.from) {
+          edgeIds.add(`${intent.id}_${sourceId}`);
+        }
+        if (this.isBootstrapIntent(intent)) {
+          for (const goal of this.openGoalFacts()) {
+            nodeIds.add(goal.id);
+            edgeIds.add(`${intent.id}_${goal.id}_scope`);
+          }
+        }
       }
     },
 
@@ -2805,7 +2918,8 @@ function cairnApp() {
     },
 
     getProducingIntent(fid) {
-      return this.project ? this.project.intents.find(i => i.to === fid) || null : null;
+      if (!this.project) return null;
+      return this.project.intents.find(i => i.to.includes(fid)) || null;
     },
 
     selectedFactId() {
@@ -2841,7 +2955,7 @@ function cairnApp() {
 
     selectedOpenIntentRecord() {
       const intent = this.selectedIntentRecord();
-      if (!intent || intent.to || !this.projectIsActive()) return null;
+      if (!intent || !this.isOpenIntent(intent) || !this.projectIsActive()) return null;
       return intent;
     },
 
@@ -2870,17 +2984,17 @@ function cairnApp() {
     },
 
     intentDotClass(i) {
-      if (i.to) return 'bg-teal-400';
+      if (!this.isOpenIntent(i)) return 'bg-teal-400';
       if (this.isBootstrapIntent(i)) return i.worker ? 'bg-orange-400' : 'bg-orange-200';
       return i.worker ? 'bg-amber-400' : 'bg-slate-300';
     },
     intentStatusClass(i) {
-      if (i.to) return 'text-teal-600';
+      if (!this.isOpenIntent(i)) return 'text-teal-600';
       if (this.isBootstrapIntent(i)) return i.worker ? 'text-orange-600' : 'text-orange-400';
       return i.worker ? 'text-amber-600' : 'text-slate-400';
     },
     intentStatusLabel(i) {
-      if (i.to) return 'Concluded';
+      if (!this.isOpenIntent(i)) return 'Concluded';
       if (this.isBootstrapIntent(i)) return i.worker ? 'Bootstrap Running' : 'Bootstrap Pending';
       return i.worker ? 'In Progress' : 'Unclaimed';
     },
@@ -2893,7 +3007,6 @@ function cairnApp() {
       const events = [];
       let order = 0;
       const origin = this.getFactRecord('origin');
-      const goal = this.getFactRecord('goal');
 
       events.push({
         id: `project-created-${this.project.project.id}`,
@@ -2901,7 +3014,7 @@ function cairnApp() {
         timestamp: this.project.project.created_at,
         actor: 'system',
         title: this.project.project.title,
-        meta: [origin ? origin.description : null, goal ? `goal: ${goal.description}` : null].filter(Boolean),
+        meta: [origin ? origin.description : null].filter(Boolean),
         targetType: 'fact',
         targetId: 'origin',
         order: order++,
@@ -2909,6 +3022,23 @@ function cairnApp() {
         producedFactId: null,
         sourceFactIds: [],
       });
+
+      for (const goal of this.goalFacts()) {
+        events.push({
+          id: `goal-declared-${goal.id}`,
+          type: 'goal_declared',
+          timestamp: goal.created_at,
+          actor: goal.creator || 'system',
+          title: goal.description,
+          meta: [goal.id],
+          targetType: 'fact',
+          targetId: goal.id,
+          order: order++,
+          intentId: null,
+          producedFactId: goal.id,
+          sourceFactIds: [],
+        });
+      }
 
       for (const hint of this.project.hints) {
         events.push({
@@ -2927,6 +3057,8 @@ function cairnApp() {
         });
       }
 
+      const completionIntentId = this.project.project.completed_by_intent;
+
       for (const intent of this.project.intents) {
         events.push({
           id: `intent-declared-${intent.id}`,
@@ -2943,9 +3075,47 @@ function cairnApp() {
           sourceFactIds: [...intent.from],
         });
 
-        if (!intent.concluded_at || !intent.to) continue;
+        if (!intent.concluded_at || intent.to.length === 0) continue;
 
-        if (intent.to === 'goal') {
+        const factTargets = intent.to.filter(target => !this.isGoalId(target));
+        const goalTargets = intent.to.filter(target => this.isGoalId(target));
+
+        if (factTargets.length > 0) {
+          const fact = this.getFactRecord(factTargets[0]);
+          events.push({
+            id: `intent-concluded-${intent.id}`,
+            type: 'intent_concluded',
+            timestamp: intent.concluded_at,
+            actor: intent.worker || intent.creator,
+            title: fact ? fact.description : intent.description,
+            meta: [intent.id, `produced ${factTargets.join(', ')}`, `from ${intent.from.join(', ')}`],
+            targetType: 'fact',
+            targetId: factTargets[0],
+            order: order++,
+            intentId: intent.id,
+            producedFactId: factTargets[0],
+            sourceFactIds: [...intent.from],
+          });
+        }
+
+        for (const gid of goalTargets) {
+          events.push({
+            id: `goal-completed-${gid}-${intent.id}`,
+            type: 'goal_completed',
+            timestamp: intent.concluded_at,
+            actor: intent.worker || intent.creator,
+            title: this.getFactRecord(gid)?.description || gid,
+            meta: [gid, `via ${intent.id}`, `from ${intent.from.join(', ')}`],
+            targetType: 'fact',
+            targetId: gid,
+            order: order++,
+            intentId: intent.id,
+            producedFactId: null,
+            sourceFactIds: [...intent.from],
+          });
+        }
+
+        if (intent.id === completionIntentId) {
           events.push({
             id: `project-completed-${intent.id}`,
             type: 'project_completed',
@@ -2953,31 +3123,14 @@ function cairnApp() {
             actor: intent.worker || intent.creator,
             title: intent.description,
             meta: [intent.id, `from ${intent.from.join(', ')}`],
-            targetType: 'fact',
-            targetId: 'goal',
+            targetType: 'reason',
+            targetId: intent.id,
             order: order++,
             intentId: intent.id,
-            producedFactId: 'goal',
+            producedFactId: null,
             sourceFactIds: [...intent.from],
           });
-          continue;
         }
-
-        const fact = this.getFactRecord(intent.to);
-        events.push({
-          id: `intent-concluded-${intent.id}`,
-          type: 'intent_concluded',
-          timestamp: intent.concluded_at,
-          actor: intent.worker || intent.creator,
-          title: fact ? fact.description : intent.description,
-          meta: [intent.id, `produced ${intent.to}`, `from ${intent.from.join(', ')}`],
-          targetType: 'fact',
-          targetId: intent.to,
-          order: order++,
-          intentId: intent.id,
-          producedFactId: intent.to,
-          sourceFactIds: [...intent.from],
-        });
       }
 
       const chronological = [...events].sort((a, b) =>
@@ -3025,7 +3178,7 @@ function cairnApp() {
       }
 
       for (const event of bucket) {
-        if ((event.type === 'intent_concluded' || event.type === 'project_completed') && event.intentId) {
+        if ((event.type === 'intent_concluded' || event.type === 'goal_completed' || event.type === 'project_completed') && event.intentId) {
           addDependency(declareEventIdByIntent.get(event.intentId), event.id);
         }
 
@@ -3063,6 +3216,8 @@ function cairnApp() {
     timelineEventBadge(entry) {
       const labels = {
         project_created: 'Project',
+        goal_declared: 'Goal',
+        goal_completed: 'Goal ✓',
         hint_added: 'Hint',
         reason_started: 'Reason',
         intent_declared: 'Intent',
@@ -3076,6 +3231,8 @@ function cairnApp() {
     timelineEventBadgeClass(entry) {
       const classes = {
         project_created: 'bg-slate-100 text-slate-600',
+        goal_declared: 'bg-sky-50 text-sky-700',
+        goal_completed: 'bg-rose-50 text-rose-700',
         hint_added: 'bg-amber-50 text-amber-700',
         reason_started: 'bg-sky-50 text-sky-700',
         intent_declared: 'bg-violet-50 text-violet-700',
@@ -3097,6 +3254,8 @@ function cairnApp() {
     timelineEventDotClass(entry) {
       const classes = {
         project_created: 'bg-slate-400',
+        goal_declared: 'bg-sky-400',
+        goal_completed: 'bg-rose-400',
         hint_added: 'bg-amber-400',
         reason_started: 'bg-sky-400',
         intent_declared: 'bg-violet-400',
@@ -3344,7 +3503,7 @@ function cairnApp() {
 
     openCompleteProject() {
       if (!this.canActOnSelectedFacts()) return;
-      this.completeForm = { description:'' };
+      this.completeForm = { description:'', goals: [] };
       this.showCompleteModal = true;
     },
 
@@ -3357,12 +3516,17 @@ function cairnApp() {
     async completeProject() {
       try {
         const actor = this.actorName();
-        await this.api('POST', `/projects/${this.selectedProjectId}/complete`, { from: this.selectedFacts, description: this.completeForm.description, worker: actor });
+        await this.api('POST', `/projects/${this.selectedProjectId}/complete`, {
+          from: this.selectedFacts,
+          description: this.completeForm.description,
+          worker: actor,
+          goals: this.completeForm.goals,
+        });
         this.showCompleteModal = false;
         await this.loadProjects();
         await this.loadProject(this.selectedProjectId);
         this.updateGraph();
-        this.showToast('Project completed');
+        this.showToast('Goals completed');
       } catch(e) { this.showToast(e.message, 'error'); }
     },
 

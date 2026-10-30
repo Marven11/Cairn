@@ -52,6 +52,7 @@ class LocalProcess:
             self.command,
             cwd=self._cwd,
             env=self.env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
