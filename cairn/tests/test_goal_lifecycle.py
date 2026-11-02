@@ -33,19 +33,19 @@ def _declare_and_claim(client: TestClient, project_id: str, from_ids: list[str],
     return response.json()["id"]
 
 
-def test_conclude_with_completed_goals_completes_project_when_all_goals_done(client: TestClient) -> None:
+def test_conclude_outputs_fact_only_and_keeps_project_active(client: TestClient) -> None:
     project_id = _create_project(client)
     intent_id = _declare_and_claim(client, project_id, ["origin"])
 
     response = client.post(
         f"/projects/{project_id}/intents/{intent_id}/conclude",
-        json={"worker": "reasoner", "description": "flag captured", "completed_goals": ["g001"]},
+        json={"worker": "reasoner", "description": "flag captured"},
     )
     assert response.status_code == 200
-    assert response.json()["intent"]["to"] == ["f001", "g001"]
+    assert response.json()["intent"]["to"] == ["f001"]
 
     detail = client.get(f"/projects/{project_id}").json()
-    assert detail["project"]["status"] == "completed"
+    assert detail["project"]["status"] == "active"
 
 
 def test_partial_goal_completion_keeps_project_active(client: TestClient) -> None:
@@ -55,10 +55,9 @@ def test_partial_goal_completion_keeps_project_active(client: TestClient) -> Non
         json={"description": "second objective", "creator": "human"},
     ).status_code == 201
 
-    intent_id = _declare_and_claim(client, project_id, ["origin"])
     response = client.post(
-        f"/projects/{project_id}/intents/{intent_id}/conclude",
-        json={"worker": "reasoner", "description": "first objective done", "completed_goals": ["g001"]},
+        f"/projects/{project_id}/complete",
+        json={"from": ["origin"], "goals": ["g001"], "description": "first objective done", "worker": "reasoner"},
     )
     assert response.status_code == 200
 
@@ -112,57 +111,36 @@ def test_complete_rejects_unknown_completed_and_empty_goals(client: TestClient) 
     # a goal completed by one intent cannot be completed again by another;
     # the project stays active because g002 is still open
     client.post(f"/projects/{project_id}/goals", json={"description": "second", "creator": "human"})
-    intent_id = _declare_and_claim(client, project_id, ["origin"])
     assert client.post(
-        f"/projects/{project_id}/intents/{intent_id}/conclude",
-        json={"worker": "reasoner", "description": "done", "completed_goals": ["g001"]},
+        f"/projects/{project_id}/complete",
+        json={"from": ["origin"], "goals": ["g001"], "description": "done", "worker": "reasoner"},
     ).status_code == 200
-    intent_id = _declare_and_claim(client, project_id, ["origin"])
     response = client.post(
-        f"/projects/{project_id}/intents/{intent_id}/conclude",
-        json={"worker": "reasoner", "description": "again", "completed_goals": ["g001"]},
+        f"/projects/{project_id}/complete",
+        json={"from": ["origin"], "goals": ["g001"], "description": "again", "worker": "reasoner"},
     )
     assert response.status_code == 409
     assert "already completed" in response.json()["detail"]
 
 
-def test_conclude_rejects_invalid_goal_references(client: TestClient) -> None:
-    project_id = _create_project(client)
-    intent_id = _declare_and_claim(client, project_id, ["origin"])
-
-    assert client.post(
-        f"/projects/{project_id}/intents/{intent_id}/conclude",
-        json={"worker": "reasoner", "description": "x", "completed_goals": ["f001"]},
-    ).status_code == 404
-    assert client.post(
-        f"/projects/{project_id}/intents/{intent_id}/conclude",
-        json={"worker": "reasoner", "description": "x", "completed_goals": ["g999"]},
-    ).status_code == 404
-
-
 # completing a goal may use other facts as sources, but never includes the same
-# goal in both from and completed goals of one intent
+# goal in both from and goals of one intent
 def test_complete_rejects_goal_in_both_from_and_goals(client: TestClient) -> None:
     project_id = _create_project(client)
     # complete g001 through one intent so that g001 is an already-completed goal
-    first = _declare_and_claim(client, project_id, ["origin"])
     assert client.post(
-        f"/projects/{project_id}/intents/{first}/conclude",
-        json={"worker": "reasoner", "description": "flag found", "completed_goals": ["g001"]},
+        f"/projects/{project_id}/complete",
+        json={"from": ["origin"], "goals": ["g001"], "description": "flag found", "worker": "reasoner"},
     ).status_code == 200
 
     client.post(
         f"/projects/{project_id}/goals",
         json={"description": "second", "creator": "human"},
     )
-    intent_id = _declare_and_claim(client, project_id, ["g001"])
     response = client.post(
-        f"/projects/{project_id}/intents/{intent_id}/conclude",
-        json={"worker": "reasoner", "description": "self", "completed_goals": ["g001"]},
+        f"/projects/{project_id}/complete",
+        json={"from": ["g001"], "goals": ["g001"], "description": "self", "worker": "reasoner"},
     )
-
-    assert response.status_code == 409
-    assert "cannot be both" in response.json()["detail"]
 
     assert response.status_code == 409
     assert "cannot be both" in response.json()["detail"]
@@ -189,28 +167,11 @@ def test_complete_rejects_open_goal_as_completion_evidence(client: TestClient) -
     assert summary["completed_goal_count"] == 0
 
 
-def test_conclude_rejects_open_goal_as_completion_evidence(client: TestClient) -> None:
-    project_id = _create_project(client)
-    client.post(
-        f"/projects/{project_id}/goals",
-        json={"description": "second", "creator": "human"},
-    )
-    intent_id = _declare_and_claim(client, project_id, ["g002"])
-    response = client.post(
-        f"/projects/{project_id}/intents/{intent_id}/conclude",
-        json={"worker": "reasoner", "description": "x", "completed_goals": ["g001"]},
-    )
-
-    assert response.status_code == 409
-    assert "completion evidence" in response.json()["detail"]
-
-
 def test_completed_goal_is_acceptable_completion_evidence(client: TestClient) -> None:
     project_id = _create_project(client)
-    intent_id = _declare_and_claim(client, project_id, ["origin"])
     assert client.post(
-        f"/projects/{project_id}/intents/{intent_id}/conclude",
-        json={"worker": "reasoner", "description": "flag found", "completed_goals": ["g001"]},
+        f"/projects/{project_id}/complete",
+        json={"from": ["origin"], "goals": ["g001"], "description": "flag found", "worker": "reasoner"},
     ).status_code == 200
 
     client.post(
@@ -220,7 +181,16 @@ def test_completed_goal_is_acceptable_completion_evidence(client: TestClient) ->
     intent_id = _declare_and_claim(client, project_id, ["f001", "g001"])
     assert client.post(
         f"/projects/{project_id}/intents/{intent_id}/conclude",
-        json={"worker": "reasoner", "description": "second done", "completed_goals": ["g002"]},
+        json={"worker": "reasoner", "description": "second fact found"},
+    ).status_code == 200
+    assert client.post(
+        f"/projects/{project_id}/complete",
+        json={
+            "from": ["f001", "g001"],
+            "goals": ["g002"],
+            "description": "second done",
+            "worker": "reasoner",
+        },
     ).status_code == 200
 
     detail = client.get(f"/projects/{project_id}").json()
@@ -262,7 +232,7 @@ def test_timeline_records_project_completion_per_completion_round(client: TestCl
 
         def __call__(self) -> str:
             self.second += 1
-            return f"2026-01-01T00:00:{self.second:02d}Z"
+            return f"2026-01-01T00:00:{self.second:02d}.000Z"
 
     clock = Clock()
     monkeypatch.setattr(projects_router, "utcnow", clock)
@@ -290,7 +260,11 @@ def test_timeline_records_project_completion_per_completion_round(client: TestCl
     assert intent_response.status_code == 201
     assert client.post(
         f"/projects/{project_id}/intents/{intent_response.json()['id']}/conclude",
-        json={"worker": "reasoner", "description": "g002 met", "completed_goals": ["g002"]},
+        json={"worker": "reasoner", "description": "g002 met"},
+    ).status_code == 200
+    assert client.post(
+        f"/projects/{project_id}/complete",
+        json={"from": ["origin"], "goals": ["g002"], "description": "g002 met", "worker": "reasoner"},
     ).status_code == 200
 
     final_timeline = client.get(f"/projects/{project_id}/export?format=timeline").text
@@ -312,18 +286,15 @@ def test_adding_goal_to_active_project_keeps_it_active(client: TestClient) -> No
     assert response.json()["fact"]["id"] == "g002"
 
 
-def test_same_second_dual_completion_marks_single_project_completion(client: TestClient, monkeypatch) -> None:
+def test_same_instant_dual_completion_marks_last_written_edge(client: TestClient, monkeypatch) -> None:
     import cairn.server.routers.intents as intents_router
     import cairn.server.routers.projects as projects_router
     import cairn.server.services as services_module
 
     class FrozenClock:
-        def __init__(self) -> None:
-            self.second = 0
-
         def __call__(self) -> str:
-            self.second += 0.5
-            return f"2026-01-01T00:00:{int(self.second):02d}Z"
+            # every write lands on the same millisecond instant
+            return "2026-01-01T00:00:01.000Z"
 
     clock = FrozenClock()
     monkeypatch.setattr(projects_router, "utcnow", clock)
@@ -335,19 +306,16 @@ def test_same_second_dual_completion_marks_single_project_completion(client: Tes
 
     intent_ids = {}
     for description in ("first", "second"):
-        response = client.post(
-            f"/projects/{project_id}/intents",
-            json={"from": ["origin"], "description": description, "creator": "r", "worker": "r"},
-        )
-        intent_ids[description] = response.json()["id"]
         gid = "g001" if description == "first" else "g002"
-        assert client.post(
-            f"/projects/{project_id}/intents/{intent_ids[description]}/conclude",
-            json={"worker": "r", "description": f"{description} met", "completed_goals": [gid]},
-        ).status_code == 200
+        response = client.post(
+            f"/projects/{project_id}/complete",
+            json={"from": ["origin"], "goals": [gid], "description": description, "worker": "r"},
+        )
+        assert response.status_code == 200
+        intent_ids[description] = response.json()["intent"]["id"]
 
-    # both goals completed within the same second: only the intent that actually
-    # finished the project (the g002 conclude) is recorded as the completion intent
+    # both completions carry the same timestamp: the edge written last
+    # (g002 by the second complete) is derived as the completion intent
     detail = client.get(f"/projects/{project_id}").json()
     assert detail["project"]["completed_by_intent"] == intent_ids["second"]
 
@@ -380,7 +348,7 @@ def test_timeline_export_includes_goal_events(client: TestClient, monkeypatch) -
 
         def __call__(self) -> str:
             self.second += 1
-            return f"2026-01-01T00:00:{self.second:02d}Z"
+            return f"2026-01-01T00:00:{self.second:02d}.000Z"
 
     clock = Clock()
     monkeypatch.setattr(projects_router, "utcnow", clock)

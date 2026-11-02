@@ -11,7 +11,6 @@ from cairn.server.models import (
 )
 from cairn.server.services import (
     check_project_active,
-    complete_project_if_all_goals_done,
     get_claimable_open_intent_or_404,
     get_releasable_open_intent_or_404,
     intent_to_model,
@@ -19,7 +18,6 @@ from cairn.server.services import (
     next_intent_id,
     utcnow,
     validate_facts_exist,
-    validate_goals_for_completion,
     validate_intent_creator_worker,
 )
 
@@ -123,14 +121,6 @@ def conclude(project_id: str, intent_id: str, body: ConcludeRequest):
     with get_conn() as conn:
         check_project_active(conn, project_id)
         get_claimable_open_intent_or_404(conn, project_id, intent_id, body.worker)
-        source_rows = conn.execute(
-            "SELECT fact_id FROM intent_sources WHERE intent_id = ? AND project_id = ?",
-            (intent_id, project_id),
-        ).fetchall()
-        source_ids = [row["fact_id"] for row in source_rows]
-        validate_goals_for_completion(
-            conn, project_id, body.completed_goals, source_ids=source_ids
-        )
 
         now = utcnow()
         fid = next_fact_id(conn, project_id)
@@ -143,12 +133,10 @@ def conclude(project_id: str, intent_id: str, body: ConcludeRequest):
             "UPDATE intents SET worker = ?, last_heartbeat_at = ?, concluded_at = ? WHERE id = ? AND project_id = ?",
             (body.worker, now, now, intent_id, project_id),
         )
-        for target_id in [fid, *body.completed_goals]:
-            conn.execute(
-                "INSERT INTO intent_targets (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
-                (intent_id, project_id, target_id),
-            )
-        complete_project_if_all_goals_done(conn, project_id, now, intent_id)
+        conn.execute(
+            "INSERT INTO intent_targets (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
+            (intent_id, project_id, fid),
+        )
 
         updated = conn.execute(
             "SELECT * FROM intents WHERE id = ? AND project_id = ?",

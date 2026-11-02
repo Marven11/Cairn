@@ -9,6 +9,7 @@ import yaml
 from cairn.server.db import get_conn
 from cairn.server.models import is_goal_id
 from cairn.server.services import (
+    derive_project_completion,
     expire_reason_leases,
     expire_workers,
     get_completed_goal_ids,
@@ -189,7 +190,8 @@ def _export_timeline(conn, project_id: str) -> str:
         events.append((i["created_at"] or "", order, block))
         order += 1
 
-    completion_intent = bundle.proj["completed_by_intent"]
+    completion = derive_project_completion(conn, project_id)
+    completion_intent = completion.completed_by_intent if completion else None
     for i in concluded:
         ts = format_export_timestamp(i["concluded_at"]) or ""
         actor = i["worker"] or i["creator"]

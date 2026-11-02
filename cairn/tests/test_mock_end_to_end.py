@@ -67,7 +67,7 @@ class InProcessClient:
     def conclude(self, project_id: str, intent_id: str, worker: str, description: str) -> ApiResult:
         return self._post(
             f"/projects/{project_id}/intents/{intent_id}/conclude",
-            {"worker": worker, "description": description, "completed_goals": []},
+            {"worker": worker, "description": description},
         )
 
     def complete(

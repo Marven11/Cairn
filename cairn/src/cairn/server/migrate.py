@@ -4,15 +4,16 @@ multi-goal schema (goals as ``gxxx`` facts, ``intent_targets`` junction table,
 
 Legacy databases are not migrated in place by the server; run this tool once to
 produce a converted database, then point ``cairn serve --db-path`` at it. Legacy
-completion edges (``to_fact_id='goal'``) become intents whose ``to`` holds only
-the goal fact, without a separate conclusion fact.
+completion edges (``to_fact_id='goal'``) keep their intent, and a placeholder
+fact is created so the ``to`` layout matches the protocol (first the conclusion
+fact, then the completed goal).
 """
 
 from __future__ import annotations
 
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from cairn.server.db import SCHEMA
@@ -23,20 +24,21 @@ class MigrationReport:
     projects: int = 0
     goals_renamed: int = 0
     facts: int = 0
+    placeholder_facts: int = 0
     intents: int = 0
     intent_targets: int = 0
-    notes: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
-        lines = [
-            f"projects: {self.projects}",
-            f"goal facts renamed to g-ids: {self.goals_renamed}",
-            f"facts: {self.facts}",
-            f"intents: {self.intents}",
-            f"intent targets: {self.intent_targets}",
-        ]
-        lines.extend(f"note: {note}" for note in self.notes)
-        return "\n".join(lines)
+        return "\n".join(
+            [
+                f"projects: {self.projects}",
+                f"goal facts renamed to g-ids: {self.goals_renamed}",
+                f"facts: {self.facts}",
+                f"placeholder facts for legacy completion edges: {self.placeholder_facts}",
+                f"intents: {self.intents}",
+                f"intent targets: {self.intent_targets}",
+            ]
+        )
 
 
 def migrate_database(source_path: Path, target_path: Path) -> MigrationReport:
@@ -114,22 +116,28 @@ def _sync_counters(target: sqlite3.Connection) -> None:
     ]
     for project_id in project_ids:
         for kind, (table, pattern) in scoped_queries.items():
-            prefix = pattern[0]
-            rows = target.execute(
-                f"SELECT id FROM {table} "
-                f"WHERE project_id = ? AND id GLOB '{prefix}[0-9]*'",
-                (project_id,),
-            ).fetchall()
-            max_value = 0
-            for row in rows:
-                match = re.fullmatch(pattern, row["id"])
-                if match:
-                    max_value = max(max_value, int(match.group(1)))
+            max_value = _max_scoped_id(target, project_id, table, pattern)
             target.execute(
                 "INSERT INTO scoped_counters (project_id, kind, value) VALUES (?, ?, ?) "
                 "ON CONFLICT(project_id, kind) DO UPDATE SET value = excluded.value",
                 (project_id, kind, max_value),
             )
+
+
+def _max_scoped_id(
+    target: sqlite3.Connection, project_id: str, table: str, pattern: str
+) -> int:
+    prefix = pattern[0]
+    max_value = 0
+    for row in target.execute(
+        f"SELECT id FROM {table} "
+        f"WHERE project_id = ? AND id GLOB '{prefix}[0-9]*'",
+        (project_id,),
+    ).fetchall():
+        match = re.fullmatch(pattern, row["id"])
+        if match:
+            max_value = max(max_value, int(match.group(1)))
+    return max_value
 
 
 def _migrate_project(
@@ -231,12 +239,34 @@ def _migrate_project(
             )
 
         if row["to_fact_id"] is not None:
-            mapped = fact_id_map.get(row["to_fact_id"], row["to_fact_id"])
-            target.execute(
-                "INSERT INTO intent_targets (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
-                (row["id"], pid, mapped),
-            )
-            report.intent_targets += 1
+            target_ids: list[str]
+            if row["to_fact_id"] == "goal":
+                # legacy completion edge: produce a placeholder fact so that the
+                # to layout stays "conclusion fact first, completed goals after"
+                placeholder_id = _next_placeholder_fact_id(target, pid)
+                created_at = row["concluded_at"] or row["created_at"]
+                target.execute(
+                    "INSERT INTO facts (id, project_id, description, created_at, creator) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        placeholder_id,
+                        pid,
+                        "placeholder fact for a legacy completion edge, created by migrate-db",
+                        created_at,
+                        row["worker"],
+                    ),
+                )
+                report.facts += 1
+                report.placeholder_facts += 1
+                goal_target = fact_id_map["goal"]
+                target_ids = [placeholder_id, goal_target]
+            else:
+                target_ids = [fact_id_map.get(row["to_fact_id"], row["to_fact_id"])]
+            for target_id in target_ids:
+                target.execute(
+                    "INSERT INTO intent_targets (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
+                    (row["id"], pid, target_id),
+                )
+                report.intent_targets += 1
 
     for hint in source.execute(
         "SELECT * FROM hints WHERE project_id = ? ORDER BY created_at, rowid",
@@ -247,27 +277,10 @@ def _migrate_project(
             (hint["id"], pid, hint["content"], hint["creator"], hint["created_at"]),
         )
 
-    if project["status"] == "completed":
-        completion_edge = target.execute(
-            """
-            SELECT i.id, i.concluded_at FROM intents i
-            JOIN intent_targets it ON it.intent_id = i.id AND it.project_id = i.project_id
-            WHERE i.project_id = ? AND it.fact_id GLOB 'g[0-9]*'
-            ORDER BY i.concluded_at DESC, i.id DESC
-            LIMIT 1
-            """,
-            (pid,),
-        ).fetchone()
-        if completion_edge is not None:
-            target.execute(
-                "UPDATE projects SET completed_at = ?, completed_by_intent = ? WHERE id = ?",
-                (completion_edge["concluded_at"], completion_edge["id"], pid),
-            )
-        else:
-            report.notes.append(
-                f"{pid}: completed project has no goal-completing intent after migration; "
-                "completed_at left empty"
-            )
+
+def _next_placeholder_fact_id(target: sqlite3.Connection, project_id: str) -> str:
+    max_value = _max_scoped_id(target, project_id, "facts", r"f(\d+)")
+    return f"f{max_value + 1:03d}"
 
 
 def _bootstrap_enabled(row: sqlite3.Row, columns: set[str]) -> int:

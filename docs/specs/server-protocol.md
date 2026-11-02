@@ -36,7 +36,7 @@ Fact 只增不改，状态变化通过追加新 Fact 表达。例如在多层网
 
 ### Project
 
-一个有明确起点和一组 goal 的问题实例，包含完整的图数据。
+一个有明确起点和一组 goal 的问题实例，包含完整的图数据。API 的 JSON 字段中时间戳均为 UTC 毫秒精度 ISO8601 格式，如 `2026-03-21T18:00:00.000Z`；下文示例为可读性省略毫秒部分。导出接口使用独立的本地时区展示格式（见导出一节）。
 
 三种状态：
 
@@ -71,7 +71,7 @@ Goal 不可修改或删除；要纠正先前的 goal，需要新增 goal。一�
 
 未结论的 Intent（`to` 为空数组）表示这个探索方向已声明但尚未有结论。声明时可只写下方向而不认领，也可同时认领。已结论的 Intent 不可修改。
 
-`to` 是数组：conclude 总是产生一个新的普通 Fact，并可以同时链接 0 个、1 个或多个 goal，表示根据 `from` 的全部 Fact 与本次探索，这些 goal 已被完成。空数组表示尚未产生结论。由 `migrate-db` 转换的 legacy 完成边没有结论 Fact，其 `to` 只含 goal id。
+`to` 是数组：首个元素是结论 Fact，其后是本次完成的 goal；由 conclude 产生的结论 Intent 的 `to` 只含结论 Fact，goal 通过 complete 写入。空数组表示尚未产生结论。由 `migrate-db` 转换的 legacy 完成边携带一个占位 Fact 作为结论 Fact。
 
 协议本身不区分 Intent 的“类型”，所有 Intent 在服务端都一视同仁；但消费者可以约定某些**保留语义**。例如可约定一条：
 
@@ -104,8 +104,8 @@ title           # 项目名称
 status          # "active" | "stopped" | "completed"
 bootstrap_enabled  # 是否允许消费者在初始态运行 bootstrap，默认 true
 created_at
-completed_at          # 最近一次进入 completed 的时间；重开（新增 goal）后清空
-completed_by_intent   # 触发最近一次完成的 Intent id；重开后清空
+completed_at          # 最近一次进入 completed 的时间；由图推导（最后一个被覆盖的 goal 的完成边时刻），项目未全部完成时为 null
+completed_by_intent   # 推导出的完成 Intent；多个 goal 在同一时刻完成时取最后写入的一条（每个 goal 至多一条覆盖边）
 reason          # 当前项目级 reason lease，null 表示当前无人执行 reason
 ```
 
@@ -539,9 +539,7 @@ Body：
 
 #### POST /projects/{project_id}/intents/{intent_id}/conclude
 
-探索结束，总是产出一个新的普通 Fact，并可选择同时完成 0 个、1 个或多个 goal，然后将 Intent 结论落定。原子操作。仅对尚无结论的 Intent 有效。claim 规则与 heartbeat 相同：未认领可直接 conclude；由当前 `worker` conclude；若被其他消费者占用且未超时，返回 409。Conclude 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
-
-`completed_goals` 列出本次完成的 goal id，可为空。其中的每个 goal 必须存在且尚未完成，否则返回 404/409；且不能同时出现在该 Intent 的 `from` 中（一个 Intent 不能把同一个 goal 既当输入又当完成目标），否则返回 409。服务端把结论 Fact 与这些 goal 一并写入 `to`。若调用后项目全部 goal 均已至少被一条 Intent 的 `to` 引用，项目状态变为 `completed` 并清空 `project.reason`。
+探索结束，总是产出一个新的普通 Fact 并将 Intent 结论落定。conclude 不完成任何 goal；goal 的完成统一通过 `POST /projects/{project_id}/complete` 声明。原子操作。仅对尚无结论的 Intent 有效。claim 规则与 heartbeat 相同：未认领可直接 conclude；由当前 `worker` conclude；若被其他消费者占用且未超时，返回 409。Conclude 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
 
 `worker` 写入后永久保留，标识本次结论由谁产出。
 
@@ -550,8 +548,7 @@ Body：
 ```json
 {
   "worker": "agent-B",
-  "description": "80端口运行 nginx 1.18，存在目录遍历",
-  "completed_goals": []
+  "description": "80端口运行 nginx 1.18，存在目录遍历"
 }
 ```
 
@@ -585,7 +582,7 @@ Body：
 
 消费者判断某些 Facts 满足若干 goal 后调用，标记这些 goal 完成。原子操作。Complete 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
 
-与 conclude 相同的完成机制：创建一条 `from` 指向所列 Facts 的已结论 Intent，总是产出一个新的普通 Fact（内容为 `description`），并把 `goals` 列入该 Intent 的 `to`。`goals` 必填且非空，只允许列出当前尚未完成的 goal；每次调用只完成明确列出的 goal；`from` 与 `goals` 不允许出现同一个 goal id，否则返回 409。若调用后全部 goal 均已完成，项目状态变为 `completed` 并清空 `project.reason`；否则项目保持 `active`，等待剩余 goal。
+goal 完成的唯一入口：创建一条 `from` 指向所列 Facts 的已结论 Intent，总是产出一个新的普通 Fact（内容为 `description`），并把 `goals` 列入该 Intent 的 `to`。`goals` 必填且非空，只允许列出当前尚未完成的 goal；每次调用只完成明确列出的 goal；`from` 与 `goals` 不允许出现同一个 goal id，否则返回 409。若调用后全部 goal 均已完成，项目状态变为 `completed` 并清空 `project.reason`；否则项目保持 `active`，等待剩余 goal。
 
 如果后续外部验证发现某个已完成的 goal 判断有误，应新增一个描述正确要求的 goal；新增 goal 会让 `completed` 项目自动回到 `active`。
 

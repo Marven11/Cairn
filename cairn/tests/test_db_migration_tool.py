@@ -136,7 +136,8 @@ def test_migrate_database_converts_goals_and_targets(tmp_path, monkeypatch) -> N
 
     assert report.projects == 2
     assert report.goals_renamed == 2
-    assert report.intent_targets == 3
+    assert report.placeholder_facts == 1
+    assert report.intent_targets == 4
 
     monkeypatch.setattr(db, "_db_path", None)
     db.configure(target)
@@ -145,10 +146,11 @@ def test_migrate_database_converts_goals_and_targets(tmp_path, monkeypatch) -> N
             "SELECT id, created_at, creator FROM facts WHERE project_id = 'proj_001' ORDER BY created_at, rowid"
         ).fetchall()
         assert [(row["id"]) for row in proj1_facts] == ["origin", "g001", "f001"]
-        # origin and the goal inherit the project creation time; f001 inherits the conclude time
-        assert proj1_facts[0]["created_at"] == "2026-01-01T00:00:00Z"
-        assert proj1_facts[1]["created_at"] == "2026-01-01T00:00:00Z"
-        assert proj1_facts[2]["created_at"] == "2026-01-01T00:01:00Z"
+        # origin and the goal inherit the project creation time; f001 inherits the conclude time;
+        # configure normalizes second-precision timestamps to millisecond precision
+        assert proj1_facts[0]["created_at"] == "2026-01-01T00:00:00.000Z"
+        assert proj1_facts[1]["created_at"] == "2026-01-01T00:00:00.000Z"
+        assert proj1_facts[2]["created_at"] == "2026-01-01T00:01:00.000Z"
         # creator is derived from the producing intent's worker
         assert proj1_facts[0]["creator"] is None
         assert proj1_facts[1]["creator"] is None
@@ -158,25 +160,34 @@ def test_migrate_database_converts_goals_and_targets(tmp_path, monkeypatch) -> N
             "SELECT created_at FROM facts WHERE project_id = 'proj_002' AND id = 'g001'"
         ).fetchone()
         # the legacy goal keeps the project creation time, not the completion time
-        assert migrated_goal["created_at"] == "2026-01-02T00:00:00Z"
+        assert migrated_goal["created_at"] == "2026-01-02T00:00:00.000Z"
 
         targets = conn.execute(
-            "SELECT fact_id FROM intent_targets WHERE project_id = 'proj_002' AND intent_id = 'i002'"
+            "SELECT fact_id FROM intent_targets WHERE project_id = 'proj_002' AND intent_id = 'i002' ORDER BY rowid"
         ).fetchall()
-        assert [row["fact_id"] for row in targets] == ["g001"]
+        # the legacy completion edge gets a placeholder conclusion fact first, then the goal
+        assert [row["fact_id"] for row in targets] == ["f002", "g001"]
+        placeholder = conn.execute(
+            "SELECT description, created_at, creator FROM facts WHERE project_id = 'proj_002' AND id = 'f002'"
+        ).fetchone()
+        assert placeholder is not None
+        assert placeholder["created_at"] == "2026-01-02T00:02:00.000Z"
+        assert placeholder["creator"] == "reasoner"
 
         goal_counter = conn.execute(
             "SELECT value FROM scoped_counters WHERE project_id = 'proj_001' AND kind = 'goal'"
         ).fetchone()
         assert goal_counter["value"] == 1
+        fact_counter = conn.execute(
+            "SELECT value FROM scoped_counters WHERE project_id = 'proj_002' AND kind = 'fact'"
+        ).fetchone()
+        assert fact_counter["value"] == 2
 
-        statuses = conn.execute("SELECT id, status, completed_at, completed_by_intent FROM projects ORDER BY id").fetchall()
+        statuses = conn.execute("SELECT id, status FROM projects ORDER BY id").fetchall()
         assert [(row["id"], row["status"]) for row in statuses] == [
             ("proj_001", "active"),
             ("proj_002", "completed"),
         ]
-        assert statuses[1]["completed_at"] == "2026-01-02T00:02:00Z"
-        assert statuses[1]["completed_by_intent"] == "i002"
 
         hint = conn.execute("SELECT id FROM hints WHERE project_id = 'proj_001'").fetchone()
         assert hint["id"] == "h001"

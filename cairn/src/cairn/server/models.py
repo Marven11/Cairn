@@ -198,9 +198,12 @@ class ReasonClaimRequest(BaseModel):
 
 
 class ConcludeRequest(BaseModel):
+    # conclude no longer carries goal completions; an explicitly rejected extra
+    # field keeps old protocol callers from silently getting a fake success
+    model_config = {"extra": "forbid"}
+
     worker: str
     description: str
-    completed_goals: list[str] = Field(default_factory=list)
 
     @field_validator("worker", "description")
     @classmethod
@@ -209,18 +212,6 @@ class ConcludeRequest(BaseModel):
         if not text:
             raise ValueError("must not be empty")
         return text
-
-    @field_validator("completed_goals")
-    @classmethod
-    def validate_goal_ids(cls, value: list[str]) -> list[str]:
-        cleaned = []
-        for item in value:
-            text = item.strip()
-            if not text:
-                raise ValueError("goal ids must not be empty")
-            if text not in cleaned:
-                cleaned.append(text)
-        return cleaned
 
 
 class CompleteRequest(BaseModel):

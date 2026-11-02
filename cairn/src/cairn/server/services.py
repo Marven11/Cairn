@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
@@ -9,8 +10,14 @@ from fastapi import HTTPException
 from cairn.server.models import Intent, ProjectMeta, ProjectReason, is_goal_id
 
 
+@dataclass
+class ProjectCompletion:
+    completed_at: str
+    completed_by_intent: str
+
+
 def utcnow() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def next_project_id(conn: sqlite3.Connection) -> str:
@@ -116,9 +123,7 @@ def all_goals_completed(conn: sqlite3.Connection, project_id: str) -> bool:
     return all(row["id"] in completed for row in goal_rows)
 
 
-def complete_project_if_all_goals_done(
-    conn: sqlite3.Connection, project_id: str, completed_at: str, completed_by_intent: str
-) -> None:
+def complete_project_if_all_goals_done(conn: sqlite3.Connection, project_id: str) -> None:
     if not all_goals_completed(conn, project_id):
         return
     row = conn.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
@@ -127,8 +132,8 @@ def complete_project_if_all_goals_done(
         return
     clear_project_reason(conn, project_id)
     conn.execute(
-        "UPDATE projects SET status = 'completed', completed_at = ?, completed_by_intent = ? WHERE id = ?",
-        (completed_at, completed_by_intent, project_id),
+        "UPDATE projects SET status = 'completed' WHERE id = ?",
+        (project_id,),
     )
 
 
@@ -139,29 +144,66 @@ def reopen_project_if_completed(conn: sqlite3.Connection, project_id: str) -> No
         return
     clear_project_reason(conn, project_id)
     conn.execute(
-        "UPDATE projects SET status = 'active', completed_at = NULL, completed_by_intent = NULL WHERE id = ?",
+        "UPDATE projects SET status = 'active' WHERE id = ?",
         (project_id,),
     )
+
+
+def derive_project_completion(
+    conn: sqlite3.Connection, project_id: str
+) -> ProjectCompletion | None:
+    """Derive the project completion from the graph.
+
+    Returns None unless every goal is covered by an intent's ``to``. The
+    covering intent is always concluded: complete writes the fact, the
+    conclusion and the goal edges in one transaction and rejects
+    already-completed goals, so each goal has exactly one covering edge.
+    The project completes when the last goal is covered; when several goals
+    are covered in the same instant, the triggering intent is the edge
+    written last.
+    """
+    goal_ids = {
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM facts WHERE project_id = ? AND id GLOB 'g[0-9]*'",
+            (project_id,),
+        ).fetchall()
+    }
+    if not goal_ids:
+        return None
+    edges: dict[str, tuple[str, int, str]] = {}
+    for row in conn.execute(
+        """
+        SELECT it.fact_id, it.rowid AS edge_rowid, i.id AS intent_id, i.concluded_at
+        FROM intent_targets it
+        JOIN intents i ON i.id = it.intent_id AND i.project_id = it.project_id
+        WHERE it.project_id = ? AND it.fact_id GLOB 'g[0-9]*'
+        """,
+        (project_id,),
+    ).fetchall():
+        edges[row["fact_id"]] = (row["concluded_at"], row["edge_rowid"], row["intent_id"])
+    if set(edges) != goal_ids:
+        return None
+    trigger_at, _, trigger_intent = max(
+        (moment, edge_rowid, intent_id) for moment, edge_rowid, intent_id in edges.values()
+    )
+    return ProjectCompletion(completed_at=trigger_at, completed_by_intent=trigger_intent)
 
 
 def validate_goals_for_completion(
     conn: sqlite3.Connection,
     project_id: str,
     goal_ids: list[str],
-    source_ids: Sequence[str] = (),
+    source_ids: Sequence[str],
 ) -> None:
     sources = set(source_ids)
     goal_rows = {row["id"]: row for row in get_goal_fact_rows(conn, project_id)}
     completed = get_completed_goal_ids(conn, project_id)
-    if goal_ids:
-        # only calls that actually declare completions are constrained to
-        # evidence backed by facts or already-completed goals; an intent may
-        # still originate from an open goal as a direction of exploration
-        for sid in sources:
-            if is_goal_id(sid) and sid not in completed:
-                raise HTTPException(
-                    409, f"Goal {sid} is not completed and cannot be used as completion evidence"
-                )
+    for sid in sources:
+        if is_goal_id(sid) and sid not in completed:
+            raise HTTPException(
+                409, f"Goal {sid} is not completed and cannot be used as completion evidence"
+            )
     for gid in goal_ids:
         row = goal_rows.get(gid)
         if row is None:
@@ -266,15 +308,16 @@ def project_reason_from_row(row: sqlite3.Row) -> ProjectReason | None:
     )
 
 
-def project_meta_from_row(row: sqlite3.Row) -> ProjectMeta:
+def project_meta_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> ProjectMeta:
+    completion = derive_project_completion(conn, row["id"])
     return ProjectMeta(
         id=row["id"],
         title=row["title"],
         status=row["status"],
         bootstrap_enabled=bool(row["bootstrap_enabled"]),
         created_at=row["created_at"],
-        completed_at=row["completed_at"],
-        completed_by_intent=row["completed_by_intent"],
+        completed_at=completion.completed_at if completion else None,
+        completed_by_intent=completion.completed_by_intent if completion else None,
         reason=project_reason_from_row(row),
     )
 

@@ -9,6 +9,19 @@ DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
 
 _db_path: Path | None = None
 
+# timestamp columns that may still hold second-precision values written by
+# older databases, upgraded to milliseconds on startup
+_SECOND_PRECISION_TS_COLUMNS = (
+    ("projects", "created_at"),
+    ("projects", "reason_started_at"),
+    ("projects", "reason_last_heartbeat_at"),
+    ("facts", "created_at"),
+    ("intents", "created_at"),
+    ("intents", "concluded_at"),
+    ("intents", "last_heartbeat_at"),
+    ("hints", "created_at"),
+)
+
 SCHEMA = """\
 CREATE TABLE IF NOT EXISTS settings (
     intent_timeout INTEGER NOT NULL DEFAULT 15,
@@ -23,8 +36,6 @@ CREATE TABLE IF NOT EXISTS projects (
     status TEXT NOT NULL DEFAULT 'active',
     bootstrap_enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    completed_at TEXT,
-    completed_by_intent TEXT,
     reason_worker TEXT,
     reason_trigger TEXT,
     reason_started_at TEXT,
@@ -68,6 +79,10 @@ CREATE TABLE IF NOT EXISTS intent_targets (
     FOREIGN KEY (intent_id, project_id) REFERENCES intents(id, project_id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_intent_targets_project ON intent_targets (project_id, fact_id);
+
+CREATE INDEX IF NOT EXISTS idx_facts_project ON facts (project_id, id);
+
 CREATE TABLE IF NOT EXISTS hints (
     id TEXT NOT NULL,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -102,6 +117,22 @@ def configure(path: Path) -> None:
     with get_conn() as conn:
         _reject_legacy_schema(conn)
         conn.executescript(SCHEMA)
+        # databases written by the version that stored project completion in the
+        # projects table carry two now-unused columns; drop them so the only
+        # live data is the graph, with completion derived from it on read
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+        for column in ("completed_at", "completed_by_intent"):
+            if column in columns:
+                conn.execute(f"ALTER TABLE projects DROP COLUMN {column}")
+        # databases written before millisecond timestamps store second-precision
+        # values (20 chars ending in Z); normalize them so that ordering and
+        # timeout comparisons stay consistent with millisecond values
+        for table, column in _SECOND_PRECISION_TS_COLUMNS:
+            conn.execute(
+                f"UPDATE {table} SET {column} = substr({column},1,19) || '.000Z' "
+                f"WHERE {column} IS NOT NULL AND length({column}) = 20 "
+                f"AND substr({column},20,1) = 'Z'"
+            )
 
 
 def _reject_legacy_schema(conn: sqlite3.Connection) -> None:

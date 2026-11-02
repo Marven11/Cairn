@@ -32,7 +32,6 @@ from cairn.server.services import (
     next_intent_id,
     next_project_id,
     project_meta_from_row,
-    project_reason_from_row,
     reopen_project_if_completed,
     utcnow,
     validate_facts_exist,
@@ -77,27 +76,23 @@ def list_projects():
             JOIN project_activity AS activity ON activity.project_id = p.id
             ORDER BY activity.last_activity_at DESC, p.rowid DESC
         """).fetchall()
-        return [
-            ProjectSummary(
-                id=row["id"],
-                title=row["title"],
-                status=row["status"],
-                bootstrap_enabled=bool(row["bootstrap_enabled"]),
-                created_at=row["created_at"],
-                last_activity_at=row["last_activity_at"],
-                reason=project_reason_from_row(row),
-                fact_count=row["fact_count"],
-                intent_count=row["intent_count"],
-                working_intent_count=row["working_intent_count"],
-                unclaimed_intent_count=row["unclaimed_intent_count"],
-                hint_count=row["hint_count"],
-                goal_count=row["goal_count"],
-                completed_goal_count=row["completed_goal_count"],
-                completed_at=row["completed_at"],
-                completed_by_intent=row["completed_by_intent"],
+        summaries = []
+        for row in rows:
+            meta = project_meta_from_row(conn, row)
+            summaries.append(
+                ProjectSummary(
+                    **meta.model_dump(),
+                    last_activity_at=row["last_activity_at"],
+                    fact_count=row["fact_count"],
+                    intent_count=row["intent_count"],
+                    working_intent_count=row["working_intent_count"],
+                    unclaimed_intent_count=row["unclaimed_intent_count"],
+                    hint_count=row["hint_count"],
+                    goal_count=row["goal_count"],
+                    completed_goal_count=row["completed_goal_count"],
+                )
             )
-            for row in rows
-        ]
+        return summaries
 
 
 @router.post("/projects", response_model=ProjectDetail, status_code=201)
@@ -168,7 +163,7 @@ def get_project(project_id: str):
         ).fetchall()
 
         return ProjectDetail(
-            project=project_meta_from_row(row),
+            project=project_meta_from_row(conn, row),
             facts=[Fact(**dict(f)) for f in facts],
             intents=build_intents(conn, project_id),
             hints=[Hint(**dict(h)) for h in hints],
@@ -191,7 +186,7 @@ def update_project_title(project_id: str, body: UpdateProjectTitleRequest):
             (body.title, project_id),
         )
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(updated)
+        return project_meta_from_row(conn, updated)
 
 
 @router.put("/projects/{project_id}/status", response_model=ProjectMeta)
@@ -203,7 +198,7 @@ def update_project_status(project_id: str, body: UpdateProjectStatusRequest):
         if current_status == "completed":
             raise HTTPException(409, "Completed projects cannot change status")
         if current_status == body.status:
-            return project_meta_from_row(row)
+            return project_meta_from_row(conn, row)
 
         conn.execute(
             "UPDATE projects SET status = ? WHERE id = ?",
@@ -216,7 +211,7 @@ def update_project_status(project_id: str, body: UpdateProjectStatusRequest):
             )
             clear_project_reason(conn, project_id)
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(updated)
+        return project_meta_from_row(conn, updated)
 
 
 @router.post("/projects/{project_id}/reason/claim", response_model=ProjectMeta)
@@ -229,7 +224,7 @@ def claim_project_reason(project_id: str, body: ReasonClaimRequest):
         if current_worker is not None and current_worker != body.worker:
             raise HTTPException(409, f"Project reason is currently claimed by {current_worker}")
         if current_worker == body.worker:
-            return project_meta_from_row(row)
+            return project_meta_from_row(conn, row)
 
         now = utcnow()
         conn.execute(
@@ -244,7 +239,7 @@ def claim_project_reason(project_id: str, body: ReasonClaimRequest):
             (body.worker, body.trigger, now, now, project_id),
         )
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(updated)
+        return project_meta_from_row(conn, updated)
 
 
 @router.post("/projects/{project_id}/reason/heartbeat", response_model=ProjectMeta)
@@ -265,7 +260,7 @@ def heartbeat_project_reason(project_id: str, body: HeartbeatRequest):
             (now, project_id),
         )
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(updated)
+        return project_meta_from_row(conn, updated)
 
 
 @router.post("/projects/{project_id}/reason/release", response_model=ProjectMeta)
@@ -276,13 +271,13 @@ def release_project_reason(project_id: str, body: HeartbeatRequest):
         row = get_project_or_404(conn, project_id)
         current_worker = row["reason_worker"]
         if current_worker is None:
-            return project_meta_from_row(row)
+            return project_meta_from_row(conn, row)
         if current_worker != body.worker:
             raise HTTPException(409, f"Project reason is currently claimed by {current_worker}")
 
         clear_project_reason(conn, project_id)
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(updated)
+        return project_meta_from_row(conn, updated)
 
 
 @router.post("/projects/{project_id}/complete", response_model=CompleteResponse)
@@ -317,7 +312,7 @@ def complete_project(project_id: str, body: CompleteRequest):
                 "INSERT INTO intent_targets (intent_id, project_id, fact_id) VALUES (?, ?, ?)",
                 (iid, project_id, target_id),
             )
-        complete_project_if_all_goals_done(conn, project_id, now, iid)
+        complete_project_if_all_goals_done(conn, project_id)
 
         updated_project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         updated_intent = conn.execute(
@@ -327,7 +322,7 @@ def complete_project(project_id: str, body: CompleteRequest):
         assert updated_project is not None
         assert updated_intent is not None
         return CompleteResponse(
-            project=project_meta_from_row(updated_project),
+            project=project_meta_from_row(conn, updated_project),
             fact=Fact(id=fid, description=body.description, created_at=now, creator=body.worker),
             intent=intent_to_model(conn, updated_intent, project_id),
         )
@@ -348,6 +343,6 @@ def create_goal(project_id: str, body: CreateGoalRequest):
         updated_project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         assert updated_project is not None
         return GoalResponse(
-            project=project_meta_from_row(updated_project),
+            project=project_meta_from_row(conn, updated_project),
             fact=Fact(id=gid, description=body.description, created_at=now, creator=body.creator),
         )

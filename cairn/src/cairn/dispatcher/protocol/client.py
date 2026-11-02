@@ -111,11 +111,7 @@ class CairnClient:
         return self._request_json(
             "POST",
             f"/projects/{project_id}/intents/{intent_id}/conclude",
-            json={
-                "worker": worker,
-                "description": description,
-                "completed_goals": [],
-            },
+            json={"worker": worker, "description": description},
         )
 
     def complete(
