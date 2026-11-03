@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from cairn.server.db import get_conn
 from cairn.server.models import (
@@ -29,8 +29,8 @@ router = APIRouter(tags=["intents"])
     response_model=Intent,
     status_code=201,
 )
-def create_intent(project_id: str, body: CreateIntentRequest):
-    with get_conn() as conn:
+def create_intent(request: Request, project_id: str, body: CreateIntentRequest):
+    with get_conn(request) as conn:
         check_project_active(conn, project_id)
         validate_facts_exist(conn, project_id, body.from_)
         validate_intent_creator_worker(body.creator, body.worker)
@@ -73,8 +73,8 @@ def create_intent(project_id: str, body: CreateIntentRequest):
     "/projects/{project_id}/intents/{intent_id}/heartbeat",
     response_model=Intent,
 )
-def heartbeat(project_id: str, intent_id: str, body: HeartbeatRequest):
-    with get_conn() as conn:
+def heartbeat(request: Request, project_id: str, intent_id: str, body: HeartbeatRequest):
+    with get_conn(request) as conn:
         check_project_active(conn, project_id)
         get_claimable_open_intent_or_404(conn, project_id, intent_id, body.worker)
 
@@ -95,8 +95,8 @@ def heartbeat(project_id: str, intent_id: str, body: HeartbeatRequest):
     "/projects/{project_id}/intents/{intent_id}/release",
     response_model=Intent,
 )
-def release(project_id: str, intent_id: str, body: HeartbeatRequest):
-    with get_conn() as conn:
+def release(request: Request, project_id: str, intent_id: str, body: HeartbeatRequest):
+    with get_conn(request) as conn:
         check_project_active(conn, project_id)
         row = get_releasable_open_intent_or_404(conn, project_id, intent_id, body.worker)
 
@@ -117,8 +117,8 @@ def release(project_id: str, intent_id: str, body: HeartbeatRequest):
     "/projects/{project_id}/intents/{intent_id}/conclude",
     response_model=ConcludeResponse,
 )
-def conclude(project_id: str, intent_id: str, body: ConcludeRequest):
-    with get_conn() as conn:
+def conclude(request: Request, project_id: str, intent_id: str, body: ConcludeRequest):
+    with get_conn(request) as conn:
         check_project_active(conn, project_id)
         get_claimable_open_intent_or_404(conn, project_id, intent_id, body.worker)
 

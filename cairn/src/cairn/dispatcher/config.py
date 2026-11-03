@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 import json
+import re
 from importlib import resources
-from pathlib import Path
 from typing import Any, Literal
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -207,7 +206,6 @@ class WorkerConfig(BaseModel):
 class DispatchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    server: str
     runtime: RuntimeConfig
     tasks: TasksConfig
     container: ContainerConfig | None = None
@@ -271,12 +269,13 @@ class DispatchConfig(BaseModel):
                 self.local = LocalConfig()
         return self
 
-    @classmethod
-    def load(cls, path: Path) -> "DispatchConfig":
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        config = cls.model_validate(data)
-        validate_prompt_resources(config.runtime.prompt_group)
-        return config
+
+def validate_dispatcher_name(name: str) -> str:
+    if len(name) > 250:
+        raise ValueError("dispatcher name must not exceed 250 characters")
+    if re.fullmatch(r"[a-zA-Z0-9_-]+", name) is None:
+        raise ValueError("dispatcher name must contain only letters, digits, underscores and hyphens")
+    return name
 
 
 def _validate_optional_positive_int_env(worker_name: str, env: dict[str, str], key: str) -> None:

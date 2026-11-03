@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Generator
 
-DEFAULT_DB = Path.home() / ".local" / "share" / "cairn" / "cairn.db"
+from fastapi import Request
 
-_db_path: Path | None = None
+DEFAULT_DATA_FOLDER = Path.home() / ".local" / "share" / "cairn"
 
 # timestamp columns that may still hold second-precision values written by
 # older databases, upgraded to milliseconds on startup
@@ -109,12 +109,8 @@ CREATE TABLE IF NOT EXISTS scoped_counters (
 
 
 def configure(path: Path) -> None:
-    global _db_path
-    if _db_path is not None:
-        return
-    _db_path = path
-    _db_path.parent.mkdir(parents=True, exist_ok=True)
-    with get_conn() as conn:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with connect(path) as conn:
         _reject_legacy_schema(conn)
         conn.executescript(SCHEMA)
         # databases written by the version that stored project completion in the
@@ -150,10 +146,13 @@ def _reject_legacy_schema(conn: sqlite3.Connection) -> None:
         )
 
 
+def get_conn(request: Request) -> AbstractContextManager[sqlite3.Connection]:
+    return connect(request.app.state.database_path)
+
+
 @contextmanager
-def get_conn() -> Generator[sqlite3.Connection, None, None]:
-    assert _db_path is not None
-    conn = sqlite3.connect(str(_db_path))
+def connect(path: Path) -> Generator[sqlite3.Connection, None, None]:
+    conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

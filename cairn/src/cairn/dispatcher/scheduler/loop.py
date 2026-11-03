@@ -6,11 +6,10 @@ import subprocess
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from pathlib import Path
 
 import requests
 
-from cairn.dispatcher.config import DispatchConfig, LocalConfig, WorkerConfig
+from cairn.dispatcher.config import LocalConfig, WorkerConfig
 from cairn.dispatcher.models import ReasonCheckpoint, RunningTask
 from cairn.dispatcher.protocol.client import CairnClient
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
@@ -41,10 +40,13 @@ class WorkerSelection:
 
 
 class DispatcherLoop:
-    def __init__(self, config_path: Path):
-        self.config_path = config_path
-        self.config = DispatchConfig.load(config_path)
-        self.client = CairnClient(self.config.server)
+    def __init__(self, server_url: str, name: str):
+        self.client = CairnClient(server_url)
+        try:
+            self.config = self.client.get_dispatch_config(name)
+        except Exception:
+            self.client.close()
+            raise
         if self.config.runtime.execution == "local":
             self.container_manager = LocalBackend(self.config.local or LocalConfig())
         else:

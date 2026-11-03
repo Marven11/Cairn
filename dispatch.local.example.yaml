@@ -3,17 +3,15 @@
 # are configured here; each CLI uses its own host configuration and credentials.
 #
 # Usage:
-#   cp dispatch.local.example.yaml dispatch.yaml
-#   uv run --project cairn cairn serve                       # in one shell
-#   uv run --project cairn cairn dispatch --config dispatch.yaml
+#   uv run --project cairn cairn serve
+#   Create a config named local in WebUI Settings using this YAML.
+#   uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name local
 #
 # Notes:
 # - Do NOT run the dispatcher via docker-compose in local mode: it must run on the host
 #   where the CLIs are installed, logged in, and on PATH. The server may still run anywhere.
 # - Local mode runs the agents with your user's permissions and no sandbox. Only use it in
 #   environments you are authorized to operate in.
-
-server: "http://127.0.0.1:8000"
 
 runtime:
   execution: local            # run workers as host processes instead of per-project containers

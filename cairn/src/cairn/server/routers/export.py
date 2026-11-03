@@ -2,7 +2,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 import yaml
 
@@ -232,11 +232,11 @@ def _export_timeline(conn, project_id: str) -> str:
 
 
 @router.get("/projects/{project_id}/export")
-def export_project(project_id: str, format: str = "yaml"):
+def export_project(request: Request, project_id: str, format: str = "yaml"):
     if format not in ("yaml", "timeline"):
         raise HTTPException(400, "Supported formats: yaml, timeline")
 
-    with get_conn() as conn:
+    with get_conn(request) as conn:
         if format == "timeline":
             text = _export_timeline(conn, project_id)
         else:

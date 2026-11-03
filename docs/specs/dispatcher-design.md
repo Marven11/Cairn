@@ -19,7 +19,7 @@ Agent 不直接认领 Intent，不直接 heartbeat，不直接调用 Cairn API�
 1. Agent 的输出任务收敛成三类：`bootstrap`、`reason` 和 `explore`；`bootstrap` 只在项目初始态运行，让 Agent 直接尝试解决整个问题；主阶段只有在已解决时才返回，且必须同时给出关键 Fact 和 `complete`；若主阶段超时，再由 `bootstrap_conclude` 收尾产出 Fact；`reason` 负责读图判断是否完成或是否需要提出一个新 intent；`explore` 只负责执行一个已认领 intent 并产出一个 Fact 结论。
 2. Dispatcher 是唯一的协议写入者和控制面；Agent 不 claim、不 heartbeat、不直接调用 Cairn API。
 3. 超时策略按任务类型定义；`bootstrap` 和 `explore` 都支持“第一阶段执行 + timeout / parse-fail 后用同一 session 进入 conclude 收尾”的双阶段模式。
-4. Prompt 以 markdown 文件形式随代码分发；支持按 prompt 组切换；Worker 行为由 `claudecode`、`codex`、`mock` 等 driver 实现；`dispatch.yaml` 只描述运行期参数。
+4. Prompt 以 markdown 文件形式随代码分发；支持按 prompt 组切换；Worker 行为由 `claudecode`、`codex`、`mock` 等 driver 实现；`dispatcher/<name>.yaml` 只描述运行期参数。
 5. 调度上，项目初始态按 `project.bootstrap_enabled` 和 Worker 能力决定优先 `bootstrap` 或直接 `reason`；非初始态出现新 Fact / Hint 等新态势时优先 `reason`，否则优先消费可认领的 `explore` intent；`reason` 的并发约束通过服务端的项目级 `project.reason` lease 表达为“单项目最多一个”，`bootstrap` 的并发约束是“单项目最多一个保留 bootstrap intent 且最多一个 bootstrap 任务”，跨项目允许并行；`runtime.interval` 被刻意复用为主循环节拍和带 claim 任务的 heartbeat 周期。
 6. Worker 按独立的 LLM 并发配额单元建模；同一个 key 不拆成多个 Worker，因此并发控制使用 `workers[].max_running` 即可。
 7. 运行日志按“状态变化优先”设计：稳定轮询、正常 heartbeat、重复 skip 原则上不刷屏；容器创建、任务派发、容器内新进程启动、健康检查、超时、收尾、释放 intent、worker 进入短暂不可选窗口等事件必须可见。
@@ -156,13 +156,11 @@ Worker 选择规则：
 
 ## 配置模型
 
-Dispatcher 使用一个运行期配置文件：
+Dispatcher 的运行期配置由 Server 保存在 `<data-folder>/dispatcher/<name>.yaml`，可通过 WebUI Settings → Dispatchers 新增、编辑和删除。
 
-- `dispatch.yaml`
-
-也就是说：
-
-- 使用者只需要提供 `dispatch.yaml`
+- Server 的 `--data-folder` 默认是 `~/.local/share/cairn`，数据库位于其中的 `cairn.db`
+- Dispatcher 通过 `--server-url` 和 `--name` 指定服务端与配置名，启动时获取 Pydantic 校验后的 JSON；保存修改后重启 Dispatcher 生效
+- 配置名使用 1–250 个英文字母、数字、下划线或连字符
 - 任务 prompt 以 markdown 文件形式随代码分发，并通过 `runtime.prompt_group` 选择目录
 - Worker 的健康检查、命令模板、session 处理、二阶段收尾能力由对应 driver 实现
 - `runtime.execution` 选择执行后端：默认 `container`（每项目一个容器），或 `local`（worker 直接在 dispatcher 宿主机上以子进程运行，复用本机已配置好的 CLI，无需 Docker 与 API key）
@@ -612,7 +610,7 @@ if running_project_count < runtime.max_running_projects:
 
 Dispatcher 固定从 `stdout` 取全文作为模型正文输出。
 
-`dispatch.yaml` 中与 Worker 相关的运行期字段如下：
+`dispatcher/<name>.yaml` 中与 Worker 相关的运行期字段如下：
 
 | 字段 | 含义 | 说明 |
 | --- | --- | --- |
@@ -631,7 +629,7 @@ Dispatcher 固定从 `stdout` 取全文作为模型正文输出。
 
 也就是说：
 
-- `dispatch.yaml` 负责声明“用哪个 driver、能跑什么任务、并发多少、环境变量是什么”；如果是 `mock`，各 phase 的模拟分布也放在 `env`
+- `dispatcher/<name>.yaml` 负责声明“用哪个 driver、能跑什么任务、并发多少、环境变量是什么”；如果是 `mock`，各 phase 的模拟分布也放在 `env`
 - 具体怎么健康检查、怎么启动命令、怎么提取 session、怎么恢复 `conclude`，都由 driver 代码负责
 
 ### Driver 接口
@@ -817,7 +815,7 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 
 启动 Dispatcher 时，应完成静态校验：
 
-- `dispatch.yaml` 必须存在且可读取
+- Server 上对应名称的配置必须存在且通过 Pydantic 校验
 - `runtime.max_workers` 必须存在
 - `runtime.max_running_projects` 必须存在
 - `runtime.max_project_workers` 必须存在
@@ -867,11 +865,12 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 
 ## 配置字段速查
 
-### `dispatch.yaml`
+### Dispatcher 启动参数
 
-| 字段 | 必填 | 含义 |
+| 参数 | 必填 | 含义 |
 | --- | --- | --- |
-| `server` | 是 | Cairn Server 的 base URL |
+| `--server-url` | 否 | Cairn Server 的 base URL，默认 `http://127.0.0.1:8000` |
+| `--name` | 是 | Server 维护的配置名 |
 
 ### `runtime.*`
 
@@ -949,8 +948,6 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 ### `dispatch.example.yaml`
 
 ```yaml
-server: "http://127.0.0.1:8000"
-
 runtime:
   max_workers: 5  # total running tasks
   max_running_projects: 3  # total active projects admitted by this dispatcher runtime

@@ -16,8 +16,7 @@ from cairn.dispatcher.models import ReasonCheckpoint
 from cairn.dispatcher.protocol.client import ApiResult
 from cairn.dispatcher.runtime.process import ProcessResult
 from cairn.dispatcher.scheduler.loop import DispatcherLoop
-from cairn.server import db
-from cairn.server.app import app
+from cairn.server.app import create_app
 from cairn.server.models import ProjectDetail, ProjectSummary, Settings
 
 
@@ -182,10 +181,8 @@ class LocalContainerManager:
 
 
 @pytest.fixture
-def http_client(tmp_path, monkeypatch) -> TestClient:
-    monkeypatch.setattr(db, "_db_path", None)
-    db.configure(tmp_path / "cairn.db")
-    with TestClient(app) as client:
+def http_client(tmp_path) -> TestClient:
+    with TestClient(create_app(tmp_path)) as client:
         yield client
 
 
@@ -214,7 +211,6 @@ def _config(
 ) -> DispatchConfig:
     return DispatchConfig.model_validate(
         {
-            "server": "in-process",
             "runtime": {
                 "interval": 1,
                 "max_workers": 1,
@@ -463,7 +459,6 @@ def _failover_config() -> DispatchConfig:
 
     return DispatchConfig.model_validate(
         {
-            "server": "in-process",
             "runtime": {
                 "interval": 1,
                 "max_workers": 1,

@@ -3,7 +3,7 @@ multi-goal schema (goals as ``gxxx`` facts, ``intent_targets`` junction table,
 ``facts.created_at``).
 
 Legacy databases are not migrated in place by the server; run this tool once to
-produce a converted database, then point ``cairn serve --db-path`` at it. Legacy
+produce a converted database, then place it at ``<data-folder>/cairn.db``. Legacy
 completion edges (``to_fact_id='goal'``) keep their intent, and a placeholder
 fact is created so the ``to`` layout matches the protocol (first the conclusion
 fact, then the completed goal).

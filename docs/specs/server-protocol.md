@@ -210,6 +210,45 @@ Body：
 
 ---
 
+### Dispatcher 配置
+
+配置保存在 `<data-folder>/dispatcher/<name>.yaml`，`name` 使用 1–250 个英文字母、数字、下划线或连字符。Server 通过 Pydantic 校验配置结构；prompt 资源与运行环境由 Dispatcher 校验。保存或删除配置后，运行中的 Dispatcher 保持启动时的配置，重启时重新获取。
+
+#### GET /dispatchers
+
+返回按名称排序的配置条目数组。正常文件的 `error` 为 `null`；名称无效、符号链接、目录或 FIFO 等条目会保留在列表中并携带错误原因，WebUI 显示原因并禁用这些条目。例如：
+
+```json
+[
+  {"name": "default", "error": null},
+  {"name": "linked", "error": "dispatcher config must be a regular file"}
+]
+```
+
+#### GET /dispatchers/{name}
+
+返回 `DispatchConfig.model_dump(mode="json")` 的 JSON 对象，供 Dispatcher 启动时读取。字段包括 `runtime`、`tasks`、`container`、`local`、`common_env` 和 `workers`，含模型默认值；`common_env` 已合并进各 Worker 的 `env`，Worker 同名变量优先。
+
+#### GET /dispatchers/{name}/yaml
+
+返回 `{"yaml": "原始 YAML 文本"}`，供 WebUI 编辑，保留注释和格式。该接口可以读取结构无效或尚未填写内容的普通 YAML 文件，供用户修复。
+
+#### POST /dispatchers/{name}
+
+创建配置，Body 为 `{"yaml": "完整 YAML 文本"}`。校验通过后保存原文，返回 `201` 和同结构响应。
+
+#### PUT /dispatchers/{name}
+
+更新已有配置，Body 与响应结构同创建接口，成功返回 `200`。校验失败时保留原文件。
+
+#### DELETE /dispatchers/{name}
+
+删除配置，成功返回 `204`。
+
+请求体通过校验后，读取、更新或删除不存在的配置返回 `404`，重复创建返回 `409`，目标为符号链接、目录等非普通文件时返回 `400`。名字或配置无效时优先返回 `422`：名字与 YAML 语法错误的 `detail` 是字符串，配置结构错误的 `detail` 是包含 `loc`、`msg`、`type` 的 Pydantic 错误数组。
+
+---
+
 ### Projects
 
 #### GET /projects

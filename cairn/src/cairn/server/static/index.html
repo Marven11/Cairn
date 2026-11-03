@@ -13,6 +13,9 @@
 <script src="/static/vendor/cytoscape-klay.js"></script>
 <script src="/static/vendor/elk.bundled.js"></script>
 <script src="/static/vendor/cytoscape-elk.js"></script>
+<link rel="stylesheet" href="/static/vendor/codemirror/codemirror.css">
+<script src="/static/vendor/codemirror/codemirror.js"></script>
+<script src="/static/vendor/codemirror/yaml.js"></script>
 <script defer src="/static/vendor/alpine.min.js"></script>
 <style>
   [x-cloak] { display: none !important; }
@@ -274,7 +277,7 @@
       <button @click="showLocalPrefs = true" class="h-7 max-w-40 px-2.5 rounded-lg border border-slate-200 text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition inline-flex items-center shrink-0">
         <span class="truncate block" x-text="actorName()"></span>
       </button>
-      <button @click="loadSettings(); showSettings = true" class="h-7 w-7 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition inline-flex items-center justify-center shrink-0">
+      <button @click="openSettings()" title="Settings" aria-label="Settings" class="h-7 w-7 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition inline-flex items-center justify-center shrink-0">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7 7 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a7 7 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a7 7 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a7 7 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/><path d="M15 12a3 3 0 1 1-6 0-3 3 0 0 1 6 0Z"/></svg>
       </button>
     </div>
@@ -483,7 +486,7 @@
       <button @click="showLocalPrefs = true" class="h-7 max-w-40 px-2.5 rounded-lg border border-slate-200 text-xs text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition inline-flex items-center shrink-0">
         <span class="truncate block" x-text="actorName()"></span>
       </button>
-      <button @click="loadSettings(); showSettings = true" class="h-7 w-7 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition inline-flex items-center justify-center shrink-0">
+      <button @click="openSettings()" title="Settings" aria-label="Settings" class="h-7 w-7 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition inline-flex items-center justify-center shrink-0">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7 7 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a7 7 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a7 7 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a7 7 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/><path d="M15 12a3 3 0 1 1-6 0-3 3 0 0 1 6 0Z"/></svg>
       </button>
     </div>
@@ -1013,21 +1016,55 @@
 </div>
 
 <!-- Settings -->
-<div x-show="showSettings" x-cloak class="fixed inset-0 z-50 flex items-center justify-center overlay" @click.self="showSettings = false">
-  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 border border-slate-200/60" @click.stop>
-    <h3 class="text-base font-semibold text-slate-700 mb-4">Server Settings</h3>
-    <div>
-      <label class="text-[11px] text-slate-400 mb-1 block font-medium">Intent timeout (seconds)</label>
-      <input type="number" x-model.number="settingsForm.intent_timeout" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400 transition">
+<div x-show="showSettings" x-cloak class="fixed inset-0 z-50 flex items-center justify-center overlay p-3" @click.self="closeSettings()" @keydown.escape.window="if (showSettings) closeSettings()">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl p-5 border border-slate-200/60 max-h-[95vh] overflow-y-auto" @click.stop>
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-base font-semibold text-slate-700">Settings</h3>
+      <button @click="closeSettings()" :disabled="dispatcherBusy" class="px-3 py-1 text-sm text-slate-500 hover:bg-slate-50 rounded-xl disabled:opacity-40">Close</button>
     </div>
-    <div class="mt-4">
-      <label class="text-[11px] text-slate-400 mb-1 block font-medium">Reason timeout (seconds)</label>
-      <input type="number" x-model.number="settingsForm.reason_timeout" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400 transition">
-      <p class="text-[11px] text-slate-400 mt-2">Shared backend configuration.</p>
+    <div class="flex gap-4 border-b border-slate-200 mb-4">
+      <button @click="settingsTab = 'server'" class="pb-2 text-sm" :class="settingsTab === 'server' ? 'text-brand-600 border-b-2 border-brand-500' : 'text-slate-500'">Server</button>
+      <button @click="openDispatcherSettings()" class="pb-2 text-sm" :class="settingsTab === 'dispatchers' ? 'text-brand-600 border-b-2 border-brand-500' : 'text-slate-500'">Dispatchers</button>
     </div>
-    <div class="flex justify-end gap-2 mt-5">
-      <button @click="showSettings = false" class="px-4 py-2 text-sm text-slate-500 hover:bg-slate-50 rounded-xl transition">Close</button>
-      <button @click="saveServerSettings()" class="px-4 py-2 text-sm bg-brand-500 text-white rounded-xl font-medium hover:bg-brand-600 transition shadow-sm shadow-brand-200">Save Server</button>
+    <div x-show="settingsTab === 'server'" class="max-w-sm">
+      <label class="text-xs text-slate-500 mb-1 block" for="intentTimeout">Intent timeout (seconds)</label>
+      <input id="intentTimeout" type="number" min="5" x-model.number="settingsForm.intent_timeout" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm">
+      <label class="text-xs text-slate-500 mb-1 mt-4 block" for="reasonTimeout">Reason timeout (seconds)</label>
+      <input id="reasonTimeout" type="number" min="5" x-model.number="settingsForm.reason_timeout" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm">
+      <div class="mt-5">
+        <button @click="saveServerSettings()" class="px-4 py-2 text-sm bg-brand-500 text-white rounded-xl font-medium hover:bg-brand-600">Save Server</button>
+      </div>
+    </div>
+    <div x-show="settingsTab === 'dispatchers'">
+      <div class="flex flex-wrap gap-3 mb-4">
+        <div class="flex-1 min-w-40">
+          <label for="dispatcherSelect" class="text-xs text-slate-500 mb-1 block">Configuration</label>
+          <select id="dispatcherSelect" :value="dispatcherSelectedName ?? ''" @change="await selectDispatcher($event.target.selectedIndex === 0 ? null : $event.target.value); $event.target.value = dispatcherSelectedName ?? ''" :disabled="dispatcherBusy" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm">
+            <option value="">New configuration</option>
+            <template x-for="entry in (dispatcherEntries ?? [])" :key="entry.name"><option :value="entry.name" :disabled="entry.error !== null" x-text="entry.error === null ? entry.name : `${entry.name} — ${entry.error}`"></option></template>
+          </select>
+        </div>
+        <div class="flex-1 min-w-40">
+          <label for="dispatcherName" class="text-xs text-slate-500 mb-1 block">Dispatcher name</label>
+          <input id="dispatcherName" x-model="dispatcherName" :readonly="dispatcherSelectedName !== null" :disabled="dispatcherBusy" placeholder="default" maxlength="250" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm read-only:bg-slate-50">
+        </div>
+      </div>
+      <p class="text-xs text-slate-500 mb-3">Names use letters, digits, underscores and hyphens. Restart the dispatcher to apply saved changes.</p>
+      <div x-show="(dispatcherEntries ?? []).some(entry => entry.error !== null)" class="text-xs text-rose-600 mb-3" role="status">
+        <template x-for="entry in (dispatcherEntries ?? []).filter(entry => entry.error !== null)" :key="entry.name">
+          <p x-text="`${entry.name}: ${entry.error}`"></p>
+        </template>
+      </div>
+      <div class="border border-slate-200 rounded-xl overflow-hidden text-sm">
+        <textarea x-ref="dispatcherEditor" aria-label="Dispatcher YAML" class="w-full h-80 p-3 font-mono" spellcheck="false"></textarea>
+      </div>
+      <p x-show="dispatcherError" x-text="dispatcherError" role="alert" class="text-sm text-rose-600 mt-3 whitespace-pre-wrap break-words"></p>
+      <div class="flex flex-wrap items-center gap-3 mt-4">
+        <span x-show="dispatcherDirty()" class="text-xs text-amber-600">Unsaved changes</span>
+        <span class="flex-1"></span>
+        <button x-show="dispatcherSelectedName !== null" @click="deleteDispatcher()" :disabled="dispatcherBusy" class="px-4 py-2 text-sm text-rose-600 border border-rose-200 rounded-xl hover:bg-rose-50 disabled:opacity-40">Delete Configuration</button>
+        <button @click="saveDispatcher()" :disabled="dispatcherBusy || dispatcherEntries === null" class="px-4 py-2 text-sm bg-brand-500 text-white rounded-xl font-medium hover:bg-brand-600 disabled:opacity-40" x-text="dispatcherBusy ? 'Please wait...' : (dispatcherSelectedName !== null ? 'Save Configuration' : 'Create Configuration')"></button>
+      </div>
     </div>
   </div>
 </div>
@@ -1098,6 +1135,8 @@
 
 <script>
 function cairnApp() {
+  let dispatcherEditor = null;
+  let dispatcherLineSeparator = '\n';
   return {
     view: 'list',
     projects: [],
@@ -1137,6 +1176,14 @@ function cairnApp() {
     renameForm: { projectId: '', originalTitle: '', title: '' },
     localPrefs: { actor_name: 'Human', layout_mode: 'dagre_tb' },
     settingsForm: { intent_timeout: 5, reason_timeout: 5 },
+    settingsTab: 'server',
+    dispatcherEntries: null,
+    dispatcherSelectedName: null,
+    dispatcherName: '',
+    dispatcherYaml: '',
+    dispatcherSavedYaml: '',
+    dispatcherBusy: false,
+    dispatcherError: '',
     deleteConfirm: { id: '', title: '' },
     isDeletingProject: false,
     yamlPreviewTitle: '',
@@ -1191,11 +1238,12 @@ function cairnApp() {
       if (body) opts.body = JSON.stringify(body);
       const r = await fetch(path, opts);
       if (r.status === 204) return null;
-      const data = await r.json();
+      let data;
+      try { data = await r.json(); } catch { throw new Error(`HTTP ${r.status}: invalid server response`); }
       if (!r.ok) {
         let msg = `HTTP ${r.status}`;
         if (typeof data.detail === 'string') msg = data.detail;
-        else if (Array.isArray(data.detail)) msg = data.detail.map(e => e.msg).join('; ');
+        else if (Array.isArray(data.detail)) msg = data.detail.map(e => `${e.loc.length ? e.loc.join('.') : 'config'}: ${e.msg}`).join('; ');
         throw new Error(msg);
       }
       return data;
@@ -1650,6 +1698,135 @@ function cairnApp() {
       } finally {
         this.isDeletingProject = false;
         if (!this.showDeleteModal) this.deleteConfirm = { id: '', title: '' };
+      }
+    },
+
+    async openSettings() {
+      this.showSettings = true;
+      this.settingsTab = 'server';
+      await this.loadSettings();
+    },
+
+    closeSettings() {
+      if (this.dispatcherBusy) return;
+      if (this.dispatcherDirty() && !confirm('Discard unsaved dispatcher changes?')) return;
+      this.setDispatcherYaml(this.dispatcherSavedYaml);
+      this.dispatcherName = this.dispatcherSelectedName ?? '';
+      this.dispatcherError = '';
+      this.showSettings = false;
+    },
+
+    dispatcherDirty() {
+      return this.dispatcherYaml !== this.dispatcherSavedYaml || this.dispatcherName !== (this.dispatcherSelectedName ?? '');
+    },
+
+    setDispatcherYaml(source) {
+      dispatcherLineSeparator = source.match(/\r\n|\r|\n/)?.[0] ?? '\n';
+      this.dispatcherYaml = source;
+      if (dispatcherEditor) dispatcherEditor.setValue(source);
+    },
+
+    setDispatcherBusy(busy) {
+      this.dispatcherBusy = busy;
+      if (dispatcherEditor) dispatcherEditor.setOption('readOnly', busy);
+    },
+
+    async openDispatcherSettings() {
+      this.settingsTab = 'dispatchers';
+      await this.$nextTick();
+      if (!dispatcherEditor) {
+        dispatcherEditor = CodeMirror.fromTextArea(this.$refs.dispatcherEditor, {
+          mode: 'yaml', lineNumbers: true, indentUnit: 2, tabSize: 2,
+          indentWithTabs: false, lineWrapping: true,
+          extraKeys: { Tab: cm => cm.replaceSelection('  ') },
+        });
+        dispatcherEditor.getWrapperElement().style.height = 'min(48vh, 480px)';
+        dispatcherEditor.on('change', (cm, change) => {
+          if (change.origin !== 'setValue') this.dispatcherYaml = cm.getValue(dispatcherLineSeparator);
+        });
+        dispatcherEditor.setValue(this.dispatcherYaml);
+      }
+      dispatcherEditor.refresh();
+      if (this.dispatcherEntries !== null || this.dispatcherBusy) return;
+      this.setDispatcherBusy(true);
+      this.dispatcherError = '';
+      try {
+        const entries = await this.api('GET', '/dispatchers');
+        this.dispatcherEntries = entries;
+        await this.$nextTick();
+        const name = entries.find(entry => entry.error === null)?.name ?? null;
+        const data = name !== null ? await this.api('GET', `/dispatchers/${encodeURIComponent(name)}/yaml`) : { yaml: '' };
+        this.dispatcherSelectedName = name;
+        this.dispatcherName = name ?? '';
+        this.setDispatcherYaml(data.yaml);
+        this.dispatcherSavedYaml = data.yaml;
+      } catch (e) {
+        this.dispatcherError = e.message;
+      } finally {
+        this.setDispatcherBusy(false);
+      }
+    },
+
+    async selectDispatcher(name) {
+      if (this.dispatcherBusy || name === this.dispatcherSelectedName) return;
+      if (this.dispatcherDirty() && !confirm('Discard unsaved dispatcher changes?')) return;
+      this.setDispatcherBusy(true);
+      this.dispatcherError = '';
+      try {
+        const data = name !== null ? await this.api('GET', `/dispatchers/${encodeURIComponent(name)}/yaml`) : { yaml: '' };
+        this.dispatcherSelectedName = name;
+        this.dispatcherName = name ?? '';
+        this.setDispatcherYaml(data.yaml);
+        this.dispatcherSavedYaml = data.yaml;
+      } catch (e) {
+        this.dispatcherError = e.message;
+      } finally {
+        this.setDispatcherBusy(false);
+      }
+    },
+
+    async saveDispatcher() {
+      if (this.dispatcherBusy || this.dispatcherEntries === null) return;
+      if (!/^[a-zA-Z0-9_-]+$/.test(this.dispatcherName)) {
+        this.dispatcherError = 'Use letters, digits, underscores or hyphens in the name.';
+        return;
+      }
+      this.setDispatcherBusy(true);
+      this.dispatcherError = '';
+      try {
+        const name = this.dispatcherName;
+        await this.api(this.dispatcherSelectedName !== null ? 'PUT' : 'POST', `/dispatchers/${encodeURIComponent(name)}`, { yaml: this.dispatcherYaml });
+        if (!this.dispatcherEntries.some(entry => entry.name === name)) {
+          this.dispatcherEntries = [...this.dispatcherEntries, { name, error: null }].sort((a, b) => a.name.localeCompare(b.name));
+          await this.$nextTick();
+        }
+        this.dispatcherSelectedName = name;
+        this.dispatcherSavedYaml = this.dispatcherYaml;
+        this.showToast('Configuration saved. Restart the dispatcher to apply changes.');
+      } catch (e) {
+        this.dispatcherError = e.message;
+      } finally {
+        this.setDispatcherBusy(false);
+      }
+    },
+
+    async deleteDispatcher() {
+      if (this.dispatcherBusy || this.dispatcherSelectedName === null) return;
+      if (!confirm(`Delete configuration "${this.dispatcherSelectedName}"?`)) return;
+      this.setDispatcherBusy(true);
+      this.dispatcherError = '';
+      try {
+        await this.api('DELETE', `/dispatchers/${encodeURIComponent(this.dispatcherSelectedName)}`);
+        this.dispatcherEntries = this.dispatcherEntries.filter(entry => entry.name !== this.dispatcherSelectedName);
+        this.dispatcherSelectedName = null;
+        this.dispatcherName = '';
+        this.setDispatcherYaml('');
+        this.dispatcherSavedYaml = '';
+        this.showToast('Dispatcher configuration deleted');
+      } catch (e) {
+        this.dispatcherError = e.message;
+      } finally {
+        this.setDispatcherBusy(false);
       }
     },
 
@@ -3559,7 +3736,6 @@ function cairnApp() {
     async saveServerSettings() {
       try {
         await this.api('PUT', '/settings', this.settingsForm);
-        this.showSettings = false;
         this.showToast('Server settings saved');
       } catch(e) { this.showToast(e.message, 'error'); }
     },

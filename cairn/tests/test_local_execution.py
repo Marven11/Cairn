@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+import yaml
 
 from cairn.dispatcher.config import DispatchConfig, LocalConfig, WorkerConfig
 from cairn.dispatcher.runtime.local_backend import LocalBackend
@@ -212,7 +213,6 @@ def test_local_backend_stopped_cleanup_is_noop(tmp_path: Path) -> None:
 
 def _local_payload() -> dict:
     return {
-        "server": "http://127.0.0.1:8000",
         "runtime": {
             "execution": "local",
             "worker_healthcheck": "disabled",
@@ -274,7 +274,7 @@ def test_container_execution_still_requires_worker_env() -> None:
 
 
 def test_shipped_local_example_config_is_valid() -> None:
-    config = DispatchConfig.load(REPO_ROOT / "dispatch.local.example.yaml")
+    config = DispatchConfig.model_validate(yaml.safe_load((REPO_ROOT / "dispatch.local.example.yaml").read_text(encoding="utf-8")))
 
     assert config.runtime.execution == "local"
     assert config.container is None
@@ -356,7 +356,6 @@ def test_get_driver_selects_local_or_container_variant() -> None:
 def _local_config_for_worker(name: str, worker_type: str) -> DispatchConfig:
     return DispatchConfig.model_validate(
         {
-            "server": "in-process",
             "runtime": {
                 "execution": "local",
                 "worker_healthcheck": "disabled",

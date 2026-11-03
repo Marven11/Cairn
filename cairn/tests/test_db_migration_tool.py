@@ -127,7 +127,7 @@ def _build_legacy_database(path) -> None:
     conn.close()
 
 
-def test_migrate_database_converts_goals_and_targets(tmp_path, monkeypatch) -> None:
+def test_migrate_database_converts_goals_and_targets(tmp_path) -> None:
     source = tmp_path / "legacy.db"
     target = tmp_path / "migrated.db"
     _build_legacy_database(source)
@@ -139,9 +139,8 @@ def test_migrate_database_converts_goals_and_targets(tmp_path, monkeypatch) -> N
     assert report.placeholder_facts == 1
     assert report.intent_targets == 4
 
-    monkeypatch.setattr(db, "_db_path", None)
     db.configure(target)
-    with db.get_conn() as conn:
+    with db.connect(target) as conn:
         proj1_facts = conn.execute(
             "SELECT id, created_at, creator FROM facts WHERE project_id = 'proj_001' ORDER BY created_at, rowid"
         ).fetchall()
@@ -193,23 +192,21 @@ def test_migrate_database_converts_goals_and_targets(tmp_path, monkeypatch) -> N
         assert hint["id"] == "h001"
 
 
-def test_migrated_database_accepts_new_writes(tmp_path, monkeypatch) -> None:
+def test_migrated_database_accepts_new_writes(tmp_path) -> None:
     """Id counters are rebuilt from migrated rows, so creating a new project,
     intent or goal after the migration must not collide with migrated ids.
     """
     from fastapi.testclient import TestClient
 
-    from cairn.server.app import app
+    from cairn.server.app import create_app
 
     source = tmp_path / "legacy.db"
-    target = tmp_path / "migrated.db"
+    target = tmp_path / "cairn.db"
     _build_legacy_database(source)
     report = migrate_database(source, target)
     assert report.projects == 2
 
-    monkeypatch.setattr(db, "_db_path", None)
-    db.configure(target)
-    with TestClient(app) as client:
+    with TestClient(create_app(tmp_path)) as client:
         response = client.post(
             "/projects",
             json={"title": "after", "origin": "o", "goal": "g"},

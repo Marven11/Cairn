@@ -7,7 +7,7 @@ import pytest
 from cairn.server import db
 
 
-def test_configure_rejects_legacy_facts_schema(tmp_path, monkeypatch) -> None:
+def test_configure_rejects_legacy_facts_schema(tmp_path) -> None:
     path = tmp_path / "legacy.db"
     with sqlite3.connect(path) as conn:
         conn.execute(
@@ -31,12 +31,11 @@ def test_configure_rejects_legacy_facts_schema(tmp_path, monkeypatch) -> None:
             """
         )
 
-    monkeypatch.setattr(db, "_db_path", None)
     with pytest.raises(RuntimeError, match="migrate-db"):
         db.configure(path)
 
 
-def test_configure_drops_deprecated_completion_columns_and_upgrades_precision(tmp_path, monkeypatch) -> None:
+def test_configure_drops_deprecated_completion_columns_and_upgrades_precision(tmp_path) -> None:
     """A database written by the previous commit (HEAD) stores completion in the
     projects table with second-precision timestamps; configure must drop the
     unused completion columns and normalize all timestamp values to milliseconds.
@@ -90,7 +89,7 @@ def test_configure_drops_deprecated_completion_columns_and_upgrades_precision(tm
     );
     """
 
-    path = tmp_path / "head.db"
+    path = tmp_path / "cairn.db"
     with sqlite3.connect(path) as conn:
         conn.executescript(head_schema)
         conn.execute(
@@ -120,9 +119,8 @@ def test_configure_drops_deprecated_completion_columns_and_upgrades_precision(tm
             "INSERT INTO intent_targets (intent_id, project_id, fact_id) VALUES ('i001', 'proj_001', 'g001')"
         )
 
-    monkeypatch.setattr(db, "_db_path", None)
     db.configure(path)
-    with db.get_conn() as conn:
+    with db.connect(path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
         assert "completed_at" not in columns
         assert "completed_by_intent" not in columns
@@ -135,9 +133,9 @@ def test_configure_drops_deprecated_completion_columns_and_upgrades_precision(tm
     # server derives the same completion from the graph
     from fastapi.testclient import TestClient
 
-    from cairn.server.app import app
+    from cairn.server.app import create_app
 
-    with TestClient(app) as client:
+    with TestClient(create_app(tmp_path)) as client:
         detail = client.get("/projects/proj_001").json()
         assert detail["project"]["status"] == "completed"
         assert detail["project"]["completed_at"] == "2026-01-01T00:05:00.000Z"

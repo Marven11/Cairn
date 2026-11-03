@@ -12,7 +12,6 @@ from cairn.server.models import Fact, Hint, Intent, ProjectDetail, ProjectMeta
 def make_config() -> DispatchConfig:
     return DispatchConfig.model_validate(
         {
-            "server": "http://127.0.0.1:8000",
             "runtime": {
                 "interval": 60,
                 "max_workers": 2,

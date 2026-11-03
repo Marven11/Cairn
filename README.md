@@ -145,12 +145,7 @@ Both setup methods require the worker container image:
 docker pull --platform=linux/amd64 ghcr.io/oritera/cairn-worker-container:latest
 ```
 
-Create your local dispatcher configuration and fill in your LLM endpoints and API keys:
 
-```bash
-cp dispatch.example.yaml dispatch.yaml
-```
- 
 ### Docker Compose (recommended)
  
 Pull the base image used to build Cairn:
@@ -163,37 +158,46 @@ docker pull ghcr.io/astral-sh/uv:python3.13-trixie
 docker compose up --build
 ```
  
-This starts `cairn-server` on port `8000` and `cairn-dispatcher` once the server passes its health check. The dispatcher mounts `dispatch.yaml` from the project root and connects to Docker via the host socket. Data is persisted to `./datas/cairn/`.
+This starts `cairn-server` on port `8000` and `cairn-dispatcher` once the server passes its health check. Open `http://localhost:8000` → Settings → Dispatchers to create the `default` configuration from `dispatch.example.yaml` with your LLM endpoints and API keys; the dispatcher restarts until it is available. The dispatcher connects to Docker via the host socket. Data and dispatcher YAML files are persisted to `./datas/cairn/`.
  
 ### Manual
 
 ```bash
-# Convert a pre-multi-goal database (goals were a single `goal` fact) to the
-# current schema; writes a new database, never touches the source
-uv run --project cairn cairn migrate-db --db-path ~/.local/share/cairn/cairn.db --target migrated.db
-
 # Start the server
 uv run --project cairn cairn serve
- 
+```
+
+Open `http://localhost:8000` → Settings → Dispatchers and create `default` from `dispatch.example.yaml` with your LLM endpoints and API keys. Then run the dispatcher in another shell:
+
+```bash
 # Run the dispatcher
-uv run --project cairn cairn dispatch --config dispatch.yaml
+uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name default
  
 # Run startup health checks only
-uv run --project cairn cairn dispatch --config dispatch.yaml --startup-healthcheck-only
+uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name default --startup-healthcheck-only
 ```
+
+Legacy single-goal databases can be converted into a new data folder while preserving the source:
+
+```bash
+mkdir -p migrated-data
+uv run --project cairn cairn migrate-db --db-path ~/.local/share/cairn/cairn.db --target migrated-data/cairn.db
+uv run --project cairn cairn serve --data-folder migrated-data
+```
+
+The server's `--data-folder` defaults to `~/.local/share/cairn`, containing `cairn.db` and `dispatcher/<name>.yaml`. WebUI Settings supports creating, editing and deleting dispatcher configurations. Names use letters, digits, underscores and hyphens. Saved changes apply when the dispatcher restarts. The server URL is supplied through `--server-url`; YAML configurations contain the runtime, tasks and workers.
 
 ### Local mode (no Docker)
 
 Instead of one container per project, workers can run directly on the dispatcher host, reusing the machine's already-configured `claude` / `codex` / `pi` CLIs — no Docker, and no API keys in the config.
 
 ```bash
-cp dispatch.local.example.yaml dispatch.yaml
-
-# Start the server
+# Start the server and create a config named local in WebUI Settings
+# using dispatch.local.example.yaml
 uv run --project cairn cairn serve
 
 # Run the dispatcher on the same host, where the CLIs are installed and logged in
-uv run --project cairn cairn dispatch --config dispatch.yaml
+uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name local
 ```
 
 Local mode is selected by `runtime.execution: local` (see `dispatch.local.example.yaml`). On startup the dispatcher checks each configured worker CLI is installed and runnable, and reminds you they must already be logged in. Each project gets an isolated working directory under `local.workspace_root` (default: the dispatcher's current directory). Run the dispatcher directly on the host — not inside Docker — since the agents run with your user's permissions and no sandbox.

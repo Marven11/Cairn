@@ -9,6 +9,7 @@ from pydantic import TypeAdapter
 import requests
 from requests.adapters import HTTPAdapter
 
+from cairn.dispatcher.config import DispatchConfig, validate_dispatcher_name, validate_prompt_resources
 from cairn.server.models import ProjectDetail, ProjectSummary, Settings
 
 LOG = logging.getLogger(__name__)
@@ -57,6 +58,22 @@ class CairnClient:
         response = self._session().get(self._url(f"/projects/{project_id}"), timeout=self._timeout)
         response.raise_for_status()
         return ProjectDetail.model_validate(response.json())
+
+    def get_dispatch_config(self, name: str) -> DispatchConfig:
+        validate_dispatcher_name(name)
+        response = self._session().get(self._url(f"/dispatchers/{name}"), timeout=self._timeout)
+        if response.status_code in (400, 404, 422):
+            detail = response.json()["detail"]
+            if isinstance(detail, list):
+                detail = "; ".join(
+                    f"{'.'.join(map(str, error['loc'])) if error['loc'] else 'config'}: {error['msg']}"
+                    for error in detail
+                )
+            raise ProtocolError(f"dispatcher {name} (HTTP {response.status_code}): {detail}", response.status_code)
+        response.raise_for_status()
+        config = DispatchConfig.model_validate(response.json())
+        validate_prompt_resources(config.runtime.prompt_group)
+        return config
 
     def get_settings(self) -> Settings:
         response = self._session().get(self._url("/settings"), timeout=self._timeout)

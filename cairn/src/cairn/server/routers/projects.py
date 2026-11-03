@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from cairn.server.db import get_conn
 from cairn.server.models import (
@@ -42,8 +42,8 @@ router = APIRouter(tags=["projects"])
 
 
 @router.get("/projects", response_model=list[ProjectSummary])
-def list_projects():
-    with get_conn() as conn:
+def list_projects(request: Request):
+    with get_conn(request) as conn:
         expire_workers(conn)
         expire_reason_leases(conn)
         # Last activity is the latest durable graph event; worker heartbeats are coordination, not activity.
@@ -96,8 +96,8 @@ def list_projects():
 
 
 @router.post("/projects", response_model=ProjectDetail, status_code=201)
-def create_project(body: CreateProjectRequest):
-    with get_conn() as conn:
+def create_project(request: Request, body: CreateProjectRequest):
+    with get_conn(request) as conn:
         pid = next_project_id(conn)
         now = utcnow()
 
@@ -144,8 +144,8 @@ def create_project(body: CreateProjectRequest):
 
 
 @router.get("/projects/{project_id}", response_model=ProjectDetail)
-def get_project(project_id: str):
-    with get_conn() as conn:
+def get_project(request: Request, project_id: str):
+    with get_conn(request) as conn:
         expire_workers(conn, project_id)
         expire_reason_leases(conn, project_id)
         row = get_project_or_404(conn, project_id)
@@ -171,15 +171,15 @@ def get_project(project_id: str):
 
 
 @router.delete("/projects/{project_id}", status_code=204)
-def delete_project(project_id: str):
-    with get_conn() as conn:
+def delete_project(request: Request, project_id: str):
+    with get_conn(request) as conn:
         get_project_or_404(conn, project_id)
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
 
 @router.put("/projects/{project_id}/title", response_model=ProjectMeta)
-def update_project_title(project_id: str, body: UpdateProjectTitleRequest):
-    with get_conn() as conn:
+def update_project_title(request: Request, project_id: str, body: UpdateProjectTitleRequest):
+    with get_conn(request) as conn:
         get_project_or_404(conn, project_id)
         conn.execute(
             "UPDATE projects SET title = ? WHERE id = ?",
@@ -190,8 +190,8 @@ def update_project_title(project_id: str, body: UpdateProjectTitleRequest):
 
 
 @router.put("/projects/{project_id}/status", response_model=ProjectMeta)
-def update_project_status(project_id: str, body: UpdateProjectStatusRequest):
-    with get_conn() as conn:
+def update_project_status(request: Request, project_id: str, body: UpdateProjectStatusRequest):
+    with get_conn(request) as conn:
         expire_reason_leases(conn, project_id)
         row = get_project_or_404(conn, project_id)
         current_status = row["status"]
@@ -215,8 +215,8 @@ def update_project_status(project_id: str, body: UpdateProjectStatusRequest):
 
 
 @router.post("/projects/{project_id}/reason/claim", response_model=ProjectMeta)
-def claim_project_reason(project_id: str, body: ReasonClaimRequest):
-    with get_conn() as conn:
+def claim_project_reason(request: Request, project_id: str, body: ReasonClaimRequest):
+    with get_conn(request) as conn:
         check_project_active(conn, project_id)
         expire_reason_leases(conn, project_id)
         row = get_project_or_404(conn, project_id)
@@ -243,8 +243,8 @@ def claim_project_reason(project_id: str, body: ReasonClaimRequest):
 
 
 @router.post("/projects/{project_id}/reason/heartbeat", response_model=ProjectMeta)
-def heartbeat_project_reason(project_id: str, body: HeartbeatRequest):
-    with get_conn() as conn:
+def heartbeat_project_reason(request: Request, project_id: str, body: HeartbeatRequest):
+    with get_conn(request) as conn:
         check_project_active(conn, project_id)
         expire_reason_leases(conn, project_id)
         row = get_project_or_404(conn, project_id)
@@ -264,8 +264,8 @@ def heartbeat_project_reason(project_id: str, body: HeartbeatRequest):
 
 
 @router.post("/projects/{project_id}/reason/release", response_model=ProjectMeta)
-def release_project_reason(project_id: str, body: HeartbeatRequest):
-    with get_conn() as conn:
+def release_project_reason(request: Request, project_id: str, body: HeartbeatRequest):
+    with get_conn(request) as conn:
         check_project_active(conn, project_id)
         expire_reason_leases(conn, project_id)
         row = get_project_or_404(conn, project_id)
@@ -281,8 +281,8 @@ def release_project_reason(project_id: str, body: HeartbeatRequest):
 
 
 @router.post("/projects/{project_id}/complete", response_model=CompleteResponse)
-def complete_project(project_id: str, body: CompleteRequest):
-    with get_conn() as conn:
+def complete_project(request: Request, project_id: str, body: CompleteRequest):
+    with get_conn(request) as conn:
         check_project_active(conn, project_id)
         expire_reason_leases(conn, project_id)
         validate_facts_exist(conn, project_id, body.from_)
@@ -329,8 +329,8 @@ def complete_project(project_id: str, body: CompleteRequest):
 
 
 @router.post("/projects/{project_id}/goals", response_model=GoalResponse, status_code=201)
-def create_goal(project_id: str, body: CreateGoalRequest):
-    with get_conn() as conn:
+def create_goal(request: Request, project_id: str, body: CreateGoalRequest):
+    with get_conn(request) as conn:
         get_project_or_404(conn, project_id)
         now = utcnow()
         gid = next_goal_id(conn, project_id)

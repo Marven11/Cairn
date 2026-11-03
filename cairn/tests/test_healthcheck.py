@@ -146,7 +146,6 @@ def test_mock_check_health_reflects_configured_outcome() -> None:
 def test_run_startup_healthchecks_reports_each_worker() -> None:
     config = DispatchConfig.model_validate(
         {
-            "server": "http://127.0.0.1:8000",
             "runtime": {
                 "interval": 3,
                 "max_workers": 2,

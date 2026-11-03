@@ -4,14 +4,12 @@ from fastapi.testclient import TestClient
 import pytest
 
 from cairn.server import db
-from cairn.server.app import app
+from cairn.server.app import create_app
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch) -> TestClient:
-    monkeypatch.setattr(db, "_db_path", None)
-    db.configure(tmp_path / "cairn.db")
-    with TestClient(app) as test_client:
+def client(tmp_path) -> TestClient:
+    with TestClient(create_app(tmp_path)) as test_client:
         yield test_client
 
 
@@ -189,7 +187,7 @@ def test_expired_intent_and_reason_leases_can_be_reclaimed(client: TestClient) -
         f"/projects/{project_id}/reason/claim",
         json={"worker": "worker-a", "trigger": "bootstrap"},
     )
-    with db.get_conn() as conn:
+    with db.connect(client.app.state.database_path) as conn:
         conn.execute(
             "UPDATE intents SET last_heartbeat_at = '2000-01-01T00:00:00Z' WHERE project_id = ?",
             (project_id,),

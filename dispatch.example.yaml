@@ -1,6 +1,3 @@
-# Cairn server API endpoint.
-server: "http://cairn-server:8000"
-
 # Shared environment variables merged into every worker.
 common_env:
   TSEC_SERVER_HOST: "<SERVER_HOST>:8000"
