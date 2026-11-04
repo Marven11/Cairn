@@ -199,6 +199,7 @@ def test_migrated_database_accepts_new_writes(tmp_path) -> None:
     from fastapi.testclient import TestClient
 
     from cairn.server.app import create_app
+    from conftest import TEST_AUTH, basic_headers
 
     source = tmp_path / "legacy.db"
     target = tmp_path / "cairn.db"
@@ -206,7 +207,10 @@ def test_migrated_database_accepts_new_writes(tmp_path) -> None:
     report = migrate_database(source, target)
     assert report.projects == 2
 
-    with TestClient(create_app(tmp_path)) as client:
+    with TestClient(
+        create_app(tmp_path, auth=TEST_AUTH),
+        headers=basic_headers(TEST_AUTH.username, TEST_AUTH.password),
+    ) as client:
         response = client.post(
             "/projects",
             json={"title": "after", "origin": "o", "goal": "g"},

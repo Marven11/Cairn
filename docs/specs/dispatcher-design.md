@@ -159,7 +159,7 @@ Worker 选择规则：
 Dispatcher 的运行期配置由 Server 保存在 `<data-folder>/dispatcher/<name>.yaml`，可通过 WebUI Settings → Dispatchers 新增、编辑和删除。
 
 - Server 的 `--data-folder` 默认是 `~/.local/share/cairn`，数据库位于其中的 `cairn.db`
-- Dispatcher 通过 `--server-url` 和 `--name` 指定服务端与配置名，启动时获取 Pydantic 校验后的 JSON；保存修改后重启 Dispatcher 生效
+- Dispatcher 通过 `--server-url` 和 `--name` 指定服务端与配置名，用 `--api-key`（或环境变量 `CAIRN_DISPATCHER_API_KEY`）携带 `dispatcher` 角色的 Basic Auth 凭据，启动时获取 Pydantic 校验后的 JSON；凭据缺失时 CLI 直接报错退出（不发请求），凭据错误时启动拉取配置的请求返回 `401` 并报错退出；保存修改后重启 Dispatcher 生效
 - 配置名使用 1–250 个英文字母、数字、下划线或连字符
 - 任务 prompt 以 markdown 文件形式随代码分发，并通过 `runtime.prompt_group` 选择目录
 - Worker 的健康检查、命令模板、session 处理、二阶段收尾能力由对应 driver 实现
@@ -871,6 +871,7 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 | --- | --- | --- |
 | `--server-url` | 否 | Cairn Server 的 base URL，默认 `http://127.0.0.1:8000` |
 | `--name` | 是 | Server 维护的配置名 |
+| `--api-key` | 是 | Dispatcher 凭据：作为固定用户名 `dispatcher` 的 Basic Auth 密码；也可用环境变量 `CAIRN_DISPATCHER_API_KEY` 注入。服务端需配置相同的 key |
 
 ### `runtime.*`
 

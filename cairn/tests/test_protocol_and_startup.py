@@ -14,7 +14,7 @@ def test_client_request_failure_returns_status_zero() -> None:
         def request(self, *_args, **_kwargs):
             raise requests.ConnectionError("offline")
 
-    client = CairnClient("http://server/")
+    client = CairnClient("http://server/", auth=("dispatcher", "key"))
     client._local.session = Session()
 
     result = client.create_intent("proj_001", ["f001"], "investigate", "reasoner")

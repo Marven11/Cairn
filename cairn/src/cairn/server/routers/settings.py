@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from cairn.server.auth import require_user
 from cairn.server.db import get_conn
 from cairn.server.models import Settings
 
@@ -13,7 +14,7 @@ def get_settings(request: Request):
         return Settings(intent_timeout=row["intent_timeout"], reason_timeout=row["reason_timeout"])
 
 
-@router.put("/settings", response_model=Settings)
+@router.put("/settings", response_model=Settings, dependencies=[Depends(require_user)])
 def update_settings(request: Request, body: Settings):
     with get_conn(request) as conn:
         conn.execute(

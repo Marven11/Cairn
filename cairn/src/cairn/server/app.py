@@ -2,12 +2,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import RLock
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from cairn import __version__
 from cairn.server import db
+from cairn.server.auth import AuthConfig, authenticate
 from cairn.server.routers import dispatchers, export, hints, intents, projects, settings
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -25,7 +26,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-def create_app(data_folder: Path = db.DEFAULT_DATA_FOLDER) -> FastAPI:
+def create_app(data_folder: Path = db.DEFAULT_DATA_FOLDER, *, auth: AuthConfig) -> FastAPI:
     app = FastAPI(
         title="Cairn",
         description="Fact-graph based collaborative exploration protocol",
@@ -34,13 +35,23 @@ def create_app(data_folder: Path = db.DEFAULT_DATA_FOLDER) -> FastAPI:
     )
     app.state.database_path = data_folder.expanduser().resolve() / "cairn.db"
     app.state.dispatcher_config_lock = RLock()
+    app.state.auth_config = auth
 
-    app.include_router(settings.router)
-    app.include_router(dispatchers.router)
-    app.include_router(projects.router)
-    app.include_router(hints.router)
-    app.include_router(intents.router)
-    app.include_router(export.router)
+    # The six API routers require basic auth; /healthz, the docs endpoints
+    # (/docs, /redoc, /openapi.json), the web UI (/) and /static are added as
+    # plain routes without this dependency and stay anonymous.
+    auth_dependencies = [Depends(authenticate)]
+    app.include_router(settings.router, dependencies=auth_dependencies)
+    app.include_router(dispatchers.router, dependencies=auth_dependencies)
+    app.include_router(projects.router, dependencies=auth_dependencies)
+    app.include_router(hints.router, dependencies=auth_dependencies)
+    app.include_router(intents.router, dependencies=auth_dependencies)
+    app.include_router(export.router, dependencies=auth_dependencies)
+
+    @app.get("/healthz", tags=["health"])
+    def healthz():
+        """Liveness probe for container health checks; anonymous."""
+        return {"status": "ok"}
 
     @app.get("/", include_in_schema=False)
     def index():

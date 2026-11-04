@@ -134,8 +134,12 @@ def test_configure_drops_deprecated_completion_columns_and_upgrades_precision(tm
     from fastapi.testclient import TestClient
 
     from cairn.server.app import create_app
+    from conftest import TEST_AUTH, basic_headers
 
-    with TestClient(create_app(tmp_path)) as client:
+    with TestClient(
+        create_app(tmp_path, auth=TEST_AUTH),
+        headers=basic_headers(TEST_AUTH.username, TEST_AUTH.password),
+    ) as client:
         detail = client.get("/projects/proj_001").json()
         assert detail["project"]["status"] == "completed"
         assert detail["project"]["completed_at"] == "2026-01-01T00:05:00.000Z"

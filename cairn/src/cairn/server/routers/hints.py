@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from cairn.server.auth import require_user
 from cairn.server.db import get_conn
 from cairn.server.models import CreateHintRequest, Hint
 from cairn.server.services import check_project_hint_writable, next_hint_id, utcnow
@@ -11,6 +12,7 @@ router = APIRouter(tags=["hints"])
     "/projects/{project_id}/hints",
     response_model=Hint,
     status_code=201,
+    dependencies=[Depends(require_user)],
 )
 def create_hint(request: Request, project_id: str, body: CreateHintRequest):
     with get_conn(request) as conn:

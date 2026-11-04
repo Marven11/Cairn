@@ -178,6 +178,23 @@ reason_timeout  # 单位秒，超过此时间无心跳则 Project.reason 清空�
 
 ## 接口列表
 
+### 认证
+
+除少数匿名端点外，所有接口均要求 HTTP Basic Auth。服务端通过启动参数或同名环境变量配置两套凭据：
+
+- 用户凭据：`--auth-username` / `CAIRN_AUTH_USERNAME`，`--auth-password` / `CAIRN_AUTH_PASSWORD`。用户名不能使用保留名 `dispatcher`，也不能包含 `:`（HTTP Basic 按第一个冒号切分，含冒号的用户名永远无法匹配，服务端启动时直接报错）；用户密码不能与 dispatcher api key 相同（否则同一字符串可认证两个角色）；三个凭据值均只能包含 ASCII 字符（非 ASCII 凭据会被 HTTP Basic 编解码拒绝，服务端启动时同样报错）。用户可调用全部接口。
+- Dispatcher 凭据：用户名固定为 `dispatcher`，密码为 `--dispatcher-api-key` / `CAIRN_DISPATCHER_API_KEY` 配置的 API key。Dispatcher 只能调用调度所需的接口（读取配置、项目图、设置、导出，以及驱动图生长的写操作；其中 `POST /complete` 在全部 goal 达成时会把项目标记为 `completed`，属于图生长的一部分），不能创建/删除项目、修改项目标题、手动启停项目（`PUT /status`）、注入 Hint、新增 goal、修改设置或管理 Dispatcher 配置，越权访问返回 `403`。
+
+匿名端点：`GET /healthz`（容器健康检查）、`/openapi.json`、`/docs`、`/redoc`、Web 首页 `/` 与其静态资源。凭据错误或缺失返回 `401`，响应携带 `WWW-Authenticate: Basic realm="cairn"` 头；`Authorization` 头缺失或无法解析（非法 base64、载荷无冒号等）时 `detail` 为 `Not authenticated`，凭据与配置不匹配时 `detail` 为 `invalid credentials`。
+
+Dispatcher 启动拉取配置时遇到 `4xx` 会直接报错退出；运行中遇到 `4xx`（如凭据被轮换）会在下一个调度 tick 重试。
+
+#### GET /healthz
+
+返回 `{"status": "ok"}`，供容器健康检查使用，无需认证。
+
+---
+
 ### 全局设置
 
 #### GET /settings

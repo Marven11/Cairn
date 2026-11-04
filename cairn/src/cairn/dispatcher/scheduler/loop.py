@@ -21,6 +21,7 @@ from cairn.dispatcher.workers.registry import get_driver
 from cairn.dispatcher.tasks.bootstrap import run_bootstrap_task
 from cairn.dispatcher.tasks.explore import run_explore_task
 from cairn.dispatcher.tasks.reason import run_reason_task
+from cairn.server.auth import DISPATCHER_USERNAME
 from cairn.server.models import Intent, ProjectDetail, ProjectSummary, is_goal_id
 
 LOG = logging.getLogger(__name__)
@@ -40,8 +41,8 @@ class WorkerSelection:
 
 
 class DispatcherLoop:
-    def __init__(self, server_url: str, name: str):
-        self.client = CairnClient(server_url)
+    def __init__(self, server_url: str, name: str, *, api_key: str):
+        self.client = CairnClient(server_url, auth=(DISPATCHER_USERNAME, api_key))
         try:
             self.config = self.client.get_dispatch_config(name)
         except Exception:

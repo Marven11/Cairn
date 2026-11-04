@@ -5,11 +5,15 @@ import pytest
 
 from cairn.server import db
 from cairn.server.app import create_app
+from conftest import TEST_AUTH, basic_headers
 
 
 @pytest.fixture
 def client(tmp_path) -> TestClient:
-    with TestClient(create_app(tmp_path)) as test_client:
+    with TestClient(
+        create_app(tmp_path, auth=TEST_AUTH),
+        headers=basic_headers(TEST_AUTH.username, TEST_AUTH.password),
+    ) as test_client:
         yield test_client
 
 

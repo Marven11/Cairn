@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from cairn.server.auth import require_user
 from cairn.server.db import get_conn
 from cairn.server.models import (
     CompleteRequest,
@@ -95,7 +96,7 @@ def list_projects(request: Request):
         return summaries
 
 
-@router.post("/projects", response_model=ProjectDetail, status_code=201)
+@router.post("/projects", response_model=ProjectDetail, status_code=201, dependencies=[Depends(require_user)])
 def create_project(request: Request, body: CreateProjectRequest):
     with get_conn(request) as conn:
         pid = next_project_id(conn)
@@ -170,14 +171,14 @@ def get_project(request: Request, project_id: str):
         )
 
 
-@router.delete("/projects/{project_id}", status_code=204)
+@router.delete("/projects/{project_id}", status_code=204, dependencies=[Depends(require_user)])
 def delete_project(request: Request, project_id: str):
     with get_conn(request) as conn:
         get_project_or_404(conn, project_id)
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
 
-@router.put("/projects/{project_id}/title", response_model=ProjectMeta)
+@router.put("/projects/{project_id}/title", response_model=ProjectMeta, dependencies=[Depends(require_user)])
 def update_project_title(request: Request, project_id: str, body: UpdateProjectTitleRequest):
     with get_conn(request) as conn:
         get_project_or_404(conn, project_id)
@@ -189,7 +190,7 @@ def update_project_title(request: Request, project_id: str, body: UpdateProjectT
         return project_meta_from_row(conn, updated)
 
 
-@router.put("/projects/{project_id}/status", response_model=ProjectMeta)
+@router.put("/projects/{project_id}/status", response_model=ProjectMeta, dependencies=[Depends(require_user)])
 def update_project_status(request: Request, project_id: str, body: UpdateProjectStatusRequest):
     with get_conn(request) as conn:
         expire_reason_leases(conn, project_id)
@@ -328,7 +329,7 @@ def complete_project(request: Request, project_id: str, body: CompleteRequest):
         )
 
 
-@router.post("/projects/{project_id}/goals", response_model=GoalResponse, status_code=201)
+@router.post("/projects/{project_id}/goals", response_model=GoalResponse, status_code=201, dependencies=[Depends(require_user)])
 def create_goal(request: Request, project_id: str, body: CreateGoalRequest):
     with get_conn(request) as conn:
         get_project_or_404(conn, project_id)

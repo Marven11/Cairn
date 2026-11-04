@@ -5,11 +5,12 @@ from pathlib import Path
 import stat
 import tempfile
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, ValidationError
 import yaml
 
 from cairn.dispatcher.config import DispatchConfig, validate_dispatcher_name
+from cairn.server.auth import require_user
 
 router = APIRouter(prefix="/dispatchers", tags=["dispatchers"])
 
@@ -92,7 +93,7 @@ def _write(path: Path, source: str, *, create: bool) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-@router.get("", response_model=list[DispatcherEntry])
+@router.get("", response_model=list[DispatcherEntry], dependencies=[Depends(require_user)])
 def list_dispatchers(request: Request):
     with request.app.state.dispatcher_config_lock:
         entries = []
@@ -117,14 +118,14 @@ def get_dispatcher(request: Request, name: str):
         return _validate(_read(path)).model_dump(mode="json")
 
 
-@router.get("/{name}/yaml", response_model=DispatcherYaml)
+@router.get("/{name}/yaml", response_model=DispatcherYaml, dependencies=[Depends(require_user)])
 def get_dispatcher_yaml(request: Request, name: str):
     path = _path(request, name)
     with request.app.state.dispatcher_config_lock:
         return DispatcherYaml(yaml=_read(path))
 
 
-@router.post("/{name}", status_code=201, response_model=DispatcherYaml)
+@router.post("/{name}", status_code=201, response_model=DispatcherYaml, dependencies=[Depends(require_user)])
 def create_dispatcher(request: Request, name: str, body: DispatcherYaml):
     path = _path(request, name)
     _validate(body.yaml)
@@ -133,7 +134,7 @@ def create_dispatcher(request: Request, name: str, body: DispatcherYaml):
     return body
 
 
-@router.put("/{name}", response_model=DispatcherYaml)
+@router.put("/{name}", response_model=DispatcherYaml, dependencies=[Depends(require_user)])
 def update_dispatcher(request: Request, name: str, body: DispatcherYaml):
     path = _path(request, name)
     _validate(body.yaml)
@@ -142,7 +143,7 @@ def update_dispatcher(request: Request, name: str, body: DispatcherYaml):
     return body
 
 
-@router.delete("/{name}", status_code=204)
+@router.delete("/{name}", status_code=204, dependencies=[Depends(require_user)])
 def delete_dispatcher(request: Request, name: str):
     path = _path(request, name)
     with request.app.state.dispatcher_config_lock:

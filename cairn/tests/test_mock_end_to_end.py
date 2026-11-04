@@ -18,6 +18,7 @@ from cairn.dispatcher.runtime.process import ProcessResult
 from cairn.dispatcher.scheduler.loop import DispatcherLoop
 from cairn.server.app import create_app
 from cairn.server.models import ProjectDetail, ProjectSummary, Settings
+from conftest import TEST_AUTH, basic_headers
 
 
 class InProcessClient:
@@ -182,7 +183,10 @@ class LocalContainerManager:
 
 @pytest.fixture
 def http_client(tmp_path) -> TestClient:
-    with TestClient(create_app(tmp_path)) as client:
+    with TestClient(
+        create_app(tmp_path, auth=TEST_AUTH),
+        headers=basic_headers(TEST_AUTH.username, TEST_AUTH.password),
+    ) as client:
         yield client
 
 

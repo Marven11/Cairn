@@ -9,12 +9,19 @@ services:
       - "8000:8000"
     volumes:
       - ./datas/cairn/:/root/.local/share/cairn/
+    environment:
+      # CHANGE THESE BEFORE DEPLOYING: this username/password pair grants full
+      # API access, and the dispatcher key must match CAIRN_DISPATCHER_API_KEY
+      # on the cairn-dispatcher service below.
+      CAIRN_AUTH_USERNAME: "admin"
+      CAIRN_AUTH_PASSWORD: "change-me"
+      CAIRN_DISPATCHER_API_KEY: "change-me-dispatcher"
     healthcheck:
       test:
         - "CMD"
         - "python"
         - "-c"
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/projects', timeout=5)"
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"
       interval: 10s
       timeout: 5s
       retries: 12
@@ -32,5 +39,8 @@ services:
     depends_on:
       cairn-server:
         condition: service_healthy
+    environment:
+      # Must match CAIRN_DISPATCHER_API_KEY on the cairn-server service above.
+      CAIRN_DISPATCHER_API_KEY: "change-me-dispatcher"
     restart: unless-stopped
     command: ["uv", "run", "cairn", "dispatch", "--server-url", "http://cairn-server:8000", "--name", "default"]

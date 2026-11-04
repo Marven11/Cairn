@@ -10,6 +10,7 @@ from cairn.dispatcher.config import validate_dispatcher_name
 from cairn.dispatcher.logging import configure_logging
 from cairn.dispatcher.scheduler.loop import DispatcherLoop
 from cairn.server import db
+from cairn.server.auth import AuthConfig
 from cairn.server.migrate import migrate_database
 
 
@@ -37,12 +38,47 @@ def _dispatcher_name(_ctx, _param, value: str) -> str:
 )
 @click.option("--log-level", default="info", show_default=True, help="Uvicorn log level")
 @click.option("--access-log/--no-access-log", default=True, show_default=True, help="Enable Uvicorn access log")
-def serve(host: str, port: int, data_folder: Path, log_level: str, access_log: bool):
+@click.option(
+    "--auth-username",
+    envvar="CAIRN_AUTH_USERNAME",
+    required=True,
+    help="Basic-auth username for API users (env: CAIRN_AUTH_USERNAME); must not be 'dispatcher'",
+)
+@click.option(
+    "--auth-password",
+    envvar="CAIRN_AUTH_PASSWORD",
+    required=True,
+    help="Basic-auth password for API users (env: CAIRN_AUTH_PASSWORD)",
+)
+@click.option(
+    "--dispatcher-api-key",
+    envvar="CAIRN_DISPATCHER_API_KEY",
+    required=True,
+    help="API key used as the basic-auth password for the fixed 'dispatcher' user (env: CAIRN_DISPATCHER_API_KEY)",
+)
+def serve(
+    host: str,
+    port: int,
+    data_folder: Path,
+    log_level: str,
+    access_log: bool,
+    auth_username: str,
+    auth_password: str,
+    dispatcher_api_key: str,
+):
     """Start the Cairn API server."""
     from cairn.server.app import create_app
 
+    try:
+        auth = AuthConfig(
+            username=auth_username,
+            password=auth_password,
+            dispatcher_api_key=dispatcher_api_key,
+        )
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
     uvicorn.run(
-        create_app(data_folder),
+        create_app(data_folder, auth=auth),
         host=host,
         port=port,
         log_level=log_level.lower(),
@@ -83,6 +119,12 @@ def migrate_db(source_path: Path, target_path: Path) -> None:
     help="Cairn server base URL",
 )
 @click.option("--name", required=True, callback=_dispatcher_name, help="Dispatcher config name")
+@click.option(
+    "--api-key",
+    envvar="CAIRN_DISPATCHER_API_KEY",
+    required=True,
+    help="API key used as the basic-auth password for the fixed 'dispatcher' user (env: CAIRN_DISPATCHER_API_KEY)",
+)
 @click.option("--once", is_flag=True, help="Run one scheduling iteration and exit")
 @click.option(
     "--startup-healthcheck-only",
@@ -90,11 +132,18 @@ def migrate_db(source_path: Path, target_path: Path) -> None:
     help="Run startup worker healthchecks and exit",
 )
 @click.option("--log-level", default="INFO", show_default=True, help="Log level")
-def dispatch(server_url: str, name: str, once: bool, startup_healthcheck_only: bool, log_level: str):
+def dispatch(
+    server_url: str,
+    name: str,
+    api_key: str,
+    once: bool,
+    startup_healthcheck_only: bool,
+    log_level: str,
+):
     """Run the Cairn dispatcher."""
     configure_logging(log_level, bare=startup_healthcheck_only)
     try:
-        loop = DispatcherLoop(server_url, name)
+        loop = DispatcherLoop(server_url, name, api_key=api_key)
         if startup_healthcheck_only:
             loop.run_startup_healthchecks_only()
             return

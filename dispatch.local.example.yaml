@@ -3,9 +3,9 @@
 # are configured here; each CLI uses its own host configuration and credentials.
 #
 # Usage:
-#   uv run --project cairn cairn serve
+#   uv run --project cairn cairn serve --auth-username admin --auth-password secret --dispatcher-api-key dispatch-secret
 #   Create a config named local in WebUI Settings using this YAML.
-#   uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name local
+#   uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name local --api-key dispatch-secret
 #
 # Notes:
 # - Do NOT run the dispatcher via docker-compose in local mode: it must run on the host

@@ -159,22 +159,31 @@ docker compose up --build
 ```
  
 This starts `cairn-server` on port `8000` and `cairn-dispatcher` once the server passes its health check. Open `http://localhost:8000` → Settings → Dispatchers to create the `default` configuration from `dispatch.example.yaml` with your LLM endpoints and API keys; the dispatcher restarts until it is available. The dispatcher connects to Docker via the host socket. Data and dispatcher YAML files are persisted to `./datas/cairn/`.
+
+Both services authenticate with HTTP Basic Auth. The values in `docker-compose.yaml` are examples for a quick start — **change them before any real deployment** (the port is published on all interfaces; the user/password pair grants full API access, and `CAIRN_DISPATCHER_API_KEY` must be identical on both services):
+
+- `CAIRN_AUTH_USERNAME` / `CAIRN_AUTH_PASSWORD` — full-access user credentials; the username must not be `dispatcher`.
+- `CAIRN_DISPATCHER_API_KEY` — API key acting as the password for the fixed `dispatcher` user, which may only call the scheduling-related APIs.
+
+The server speaks plain HTTP; put it behind a TLS-terminating reverse proxy for any deployment beyond localhost, since Basic Auth credentials are sent on every request. Credentials passed as CLI options are visible in the process list — prefer the `CAIRN_*` environment variables in shared environments.
+
+Anonymous endpoints: `/healthz` (used by the container health check), `/openapi.json`, `/docs`, `/redoc`, and the web UI assets.
  
 ### Manual
 
 ```bash
 # Start the server
-uv run --project cairn cairn serve
+uv run --project cairn cairn serve --auth-username admin --auth-password secret --dispatcher-api-key dispatch-secret
 ```
 
 Open `http://localhost:8000` → Settings → Dispatchers and create `default` from `dispatch.example.yaml` with your LLM endpoints and API keys. Then run the dispatcher in another shell:
 
 ```bash
 # Run the dispatcher
-uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name default
+uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name default --api-key dispatch-secret
  
 # Run startup health checks only
-uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name default --startup-healthcheck-only
+uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name default --api-key dispatch-secret --startup-healthcheck-only
 ```
 
 Legacy single-goal databases can be converted into a new data folder while preserving the source:
@@ -182,7 +191,7 @@ Legacy single-goal databases can be converted into a new data folder while prese
 ```bash
 mkdir -p migrated-data
 uv run --project cairn cairn migrate-db --db-path ~/.local/share/cairn/cairn.db --target migrated-data/cairn.db
-uv run --project cairn cairn serve --data-folder migrated-data
+uv run --project cairn cairn serve --data-folder migrated-data --auth-username admin --auth-password secret --dispatcher-api-key dispatch-secret
 ```
 
 The server's `--data-folder` defaults to `~/.local/share/cairn`, containing `cairn.db` and `dispatcher/<name>.yaml`. WebUI Settings supports creating, editing and deleting dispatcher configurations. Names use letters, digits, underscores and hyphens. Saved changes apply when the dispatcher restarts. The server URL is supplied through `--server-url`; YAML configurations contain the runtime, tasks and workers.
@@ -194,10 +203,10 @@ Instead of one container per project, workers can run directly on the dispatcher
 ```bash
 # Start the server and create a config named local in WebUI Settings
 # using dispatch.local.example.yaml
-uv run --project cairn cairn serve
+uv run --project cairn cairn serve --auth-username admin --auth-password secret --dispatcher-api-key dispatch-secret
 
 # Run the dispatcher on the same host, where the CLIs are installed and logged in
-uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name local
+uv run --project cairn cairn dispatch --server-url http://127.0.0.1:8000 --name local --api-key dispatch-secret
 ```
 
 Local mode is selected by `runtime.execution: local` (see `dispatch.local.example.yaml`). On startup the dispatcher checks each configured worker CLI is installed and runnable, and reminds you they must already be logged in. Each project gets an isolated working directory under `local.workspace_root` (default: the dispatcher's current directory). Run the dispatcher directly on the host — not inside Docker — since the agents run with your user's permissions and no sandbox.

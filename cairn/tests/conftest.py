@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 
 from cairn.dispatcher.config import DispatchConfig
 from cairn.dispatcher.protocol.client import ApiResult
 from cairn.dispatcher.workers.base import DriverResult
 from cairn.dispatcher.workers.health import HealthResult
+from cairn.server.auth import AuthConfig
 from cairn.server.models import Fact, Hint, Intent, ProjectDetail, ProjectMeta
+
+TEST_AUTH = AuthConfig(username="tester", password="secret", dispatcher_api_key="dispatch-key")
+
+
+def basic_headers(username: str, password: str) -> dict[str, str]:
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
 
 
 def make_config() -> DispatchConfig:
