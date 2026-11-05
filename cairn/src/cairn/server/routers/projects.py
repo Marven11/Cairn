@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from cairn.server.auth import require_user
 from cairn.server.db import get_conn
+from cairn.server.etag import etag
 from cairn.server.models import (
     CompleteRequest,
     CompleteResponse,
@@ -43,6 +44,7 @@ router = APIRouter(tags=["projects"])
 
 
 @router.get("/projects", response_model=list[ProjectSummary])
+@etag
 def list_projects(request: Request):
     with get_conn(request) as conn:
         expire_workers(conn)
@@ -145,6 +147,7 @@ def create_project(request: Request, body: CreateProjectRequest):
 
 
 @router.get("/projects/{project_id}", response_model=ProjectDetail)
+@etag
 def get_project(request: Request, project_id: str):
     with get_conn(request) as conn:
         expire_workers(conn, project_id)

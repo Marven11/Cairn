@@ -272,6 +272,8 @@ Body：
 
 返回所有项目列表，含元信息和统计摘要，不含图数据。结果按 `last_activity_at` 从新到旧排序；该时间取项目创建、Hint 添加、Intent 声明和 Intent 结论中最近的一次。协调状态（reason claim/heartbeat）和项目元数据（标题、状态）的修改不计入活动时间。
 
+响应携带强 `ETag` 和 `Cache-Control: no-cache`。请求携带的 `If-None-Match` 命中时返回 `304` 和空响应体，`*` 视为命中，其余情况返回 `200` 和完整响应。
+
 响应：
 
 ```json
@@ -327,6 +329,8 @@ Body：
 #### GET /projects/{project_id}
 
 返回项目完整数据，包含 facts、intents、hints。
+
+条件请求语义与 `GET /projects` 相同：携带 `If-None-Match` 命中时返回 `304` 和空响应体。
 
 响应：
 

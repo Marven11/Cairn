@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 import logging
@@ -33,6 +34,12 @@ class ApiResult:
         return 200 <= self.status_code < 300
 
 
+@dataclass(slots=True)
+class _EtagEntry[T]:
+    etag: str
+    data: T
+
+
 class CairnClient:
     def __init__(
         self,
@@ -48,6 +55,9 @@ class CairnClient:
         self._local = threading.local()
         self._sessions: dict[int, requests.Session] = {}
         self._sessions_lock = threading.Lock()
+        self._summary_etag_cache: dict[str, _EtagEntry[list[ProjectSummary]]] = {}
+        self._detail_etag_cache: dict[str, _EtagEntry[ProjectDetail]] = {}
+        self._etag_cache_lock = threading.Lock()
 
     def close(self) -> None:
         with self._sessions_lock:
@@ -57,14 +67,32 @@ class CairnClient:
             session.close()
 
     def list_projects(self) -> list[ProjectSummary]:
-        response = self._session().get(self._url("/projects"), timeout=self._timeout)
-        response.raise_for_status()
-        return self._summary_adapter.validate_python(response.json())
+        return self._etag_get(self._summary_etag_cache, "/projects", self._summary_adapter.validate_json)
 
     def get_project(self, project_id: str) -> ProjectDetail:
-        response = self._session().get(self._url(f"/projects/{project_id}"), timeout=self._timeout)
+        return self._etag_get(
+            self._detail_etag_cache, f"/projects/{project_id}", ProjectDetail.model_validate_json
+        )
+
+    def _etag_get[T](self, cache: dict[str, _EtagEntry[T]], path: str, parse: Callable[[bytes], T]) -> T:
+        with self._etag_cache_lock:
+            entry = cache.get(path)
+        headers = {"If-None-Match": entry.etag} if entry is not None else None
+        response = self._session().get(self._url(path), headers=headers, timeout=self._timeout)
+        if response.status_code == 304:
+            if entry is None:
+                raise ProtocolError(f"unexpected 304 without cached etag path={path}", 304)
+            return entry.data
+        if response.status_code >= 400:
+            with self._etag_cache_lock:
+                cache.pop(path, None)
         response.raise_for_status()
-        return ProjectDetail.model_validate(response.json())
+        data = parse(response.content)
+        etag = response.headers.get("ETag")
+        if etag is not None:
+            with self._etag_cache_lock:
+                cache[path] = _EtagEntry(etag, data)
+        return data
 
     def get_dispatch_config(self, name: str) -> DispatchConfig:
         validate_dispatcher_name(name)

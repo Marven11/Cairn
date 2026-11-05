@@ -351,3 +351,103 @@ def test_worker_heartbeats_do_not_count_as_project_activity(
     projects = client.get("/projects").json()
     assert projects[0]["last_activity_at"] == "2026-01-02T00:00:00Z"
 
+
+def test_project_endpoints_return_etag_and_honor_if_none_match(client: TestClient) -> None:
+    project_id = _create_project(client)
+
+    list_response = client.get("/projects")
+    assert list_response.status_code == 200
+    assert list_response.headers["Cache-Control"] == "no-cache"
+    list_etag = list_response.headers["ETag"]
+
+    detail_response = client.get(f"/projects/{project_id}")
+    assert detail_response.status_code == 200
+    detail_etag = detail_response.headers["ETag"]
+
+    not_modified_list = client.get("/projects", headers={"If-None-Match": list_etag})
+    assert not_modified_list.status_code == 304
+    assert not_modified_list.text == ""
+    assert not_modified_list.headers["ETag"] == list_etag
+
+    not_modified_detail = client.get(
+        f"/projects/{project_id}", headers={"If-None-Match": detail_etag}
+    )
+    assert not_modified_detail.status_code == 304
+    assert not_modified_detail.text == ""
+
+    client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "work", "creator": "reasoner", "worker": None},
+    )
+    assert client.get("/projects", headers={"If-None-Match": list_etag}).status_code == 200
+    assert client.get(
+        f"/projects/{project_id}", headers={"If-None-Match": detail_etag}
+    ).status_code == 200
+
+
+def test_etag_serialization_keeps_intent_from_alias(client: TestClient) -> None:
+    project_id = _create_project(client)
+    client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "work", "creator": "reasoner", "worker": None},
+    )
+
+    intents = client.get(f"/projects/{project_id}").json()["intents"]
+    assert intents[0]["from"] == ["origin"]
+    assert "from_" not in intents[0]
+
+
+def test_if_none_match_accepts_multiple_weak_and_star_values(client: TestClient) -> None:
+    project_id = _create_project(client)
+    etag = client.get(f"/projects/{project_id}").headers["ETag"]
+
+    assert client.get(
+        f"/projects/{project_id}", headers={"If-None-Match": f'"other", W/{etag}, "third"'}
+    ).status_code == 304
+    assert client.get(
+        f"/projects/{project_id}", headers={"If-None-Match": "*"}
+    ).status_code == 304
+    assert client.get(
+        f"/projects/{project_id}", headers={"If-None-Match": '"no-match"'}
+    ).status_code == 200
+    assert client.get(
+        f"/projects/{project_id}", headers={"If-None-Match": '"a"*'}
+    ).status_code == 200
+
+
+def test_if_none_match_parses_lists_leniently(client: TestClient) -> None:
+    project_id = _create_project(client)
+    etag = client.get(f"/projects/{project_id}").headers["ETag"]
+
+    assert client.get(
+        f"/projects/{project_id}", headers={"If-None-Match": f'junk,{etag}'}
+    ).status_code == 304
+    assert client.get(
+        f"/projects/{project_id}", headers={"If-None-Match": f"{etag},"}
+    ).status_code == 304
+    assert client.get(
+        f"/projects/{project_id}", headers={"If-None-Match": "junk"}
+    ).status_code == 200
+    assert client.get(
+        f"/projects/{project_id}", headers={"If-None-Match": '"quoted,comma"'}
+    ).status_code == 200
+
+
+def test_etag_responses_still_expire_stale_workers(client: TestClient) -> None:
+    project_id = _create_project(client)
+    assert client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "work", "creator": "worker-a", "worker": "worker-a"},
+    ).status_code == 201
+    stale_etag = client.get(f"/projects/{project_id}").headers["ETag"]
+
+    with db.connect(client.app.state.database_path) as conn:
+        conn.execute(
+            "UPDATE intents SET last_heartbeat_at = '2000-01-01T00:00:00Z' WHERE project_id = ?",
+            (project_id,),
+        )
+
+    response = client.get(f"/projects/{project_id}", headers={"If-None-Match": stale_etag})
+    assert response.status_code == 200
+    assert response.json()["intents"][0]["worker"] is None
+
