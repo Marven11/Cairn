@@ -135,6 +135,7 @@ def _export_yaml(conn, project_id: str) -> str:
             "worker": i["worker"],
             "created_at": format_export_timestamp(i["created_at"]),
             "concluded_at": format_export_timestamp(i["concluded_at"]),
+            "weight": i["weight"],
         }
         intent_list.append(entry)
 

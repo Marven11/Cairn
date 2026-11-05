@@ -1,12 +1,17 @@
-"""One-shot migration tool: convert a legacy single-goal Cairn database to the
-multi-goal schema (goals as ``gxxx`` facts, ``intent_targets`` junction table,
-``facts.created_at``).
+"""Versioned one-shot migration tools. The server only creates fresh
+ databases and refuses to start on databases written by older versions (see
+ ``db.configure``); these tools produce a converted copy to place at
+ ``<data-folder>/cairn.db``:
 
-Legacy databases are not migrated in place by the server; run this tool once to
-produce a converted database, then place it at ``<data-folder>/cairn.db``. Legacy
-completion edges (``to_fact_id='goal'``) keep their intent, and a placeholder
-fact is created so the ``to`` layout matches the protocol (first the conclusion
-fact, then the completed goal).
+- ``multi-goal``: convert a legacy single-goal database to the multi-goal
+  schema (goals as ``gxxx`` facts, ``intent_targets`` junction table,
+  ``facts.created_at``). Legacy completion edges (``to_fact_id='goal'``) keep
+  their intent, and a placeholder fact is created so the ``to`` layout matches
+  the protocol (first the conclusion fact, then the completed goal).
+- ``intent-weight``: copy a multi-goal database without weights, drop the
+  deprecated project completion columns it may still carry, rewrite
+  second-precision timestamps to milliseconds, and add the
+  ``intents.weight`` column.
 """
 
 from __future__ import annotations
@@ -17,6 +22,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cairn.server.db import SCHEMA
+
+_SECOND_PRECISION_TS_COLUMNS = (
+    ("projects", "created_at"),
+    ("projects", "reason_started_at"),
+    ("projects", "reason_last_heartbeat_at"),
+    ("facts", "created_at"),
+    ("intents", "created_at"),
+    ("intents", "concluded_at"),
+    ("intents", "last_heartbeat_at"),
+    ("hints", "created_at"),
+)
 
 
 @dataclass
@@ -72,12 +88,75 @@ def migrate_database(source_path: Path, target_path: Path) -> MigrationReport:
     return report
 
 
+@dataclass
+class IntentWeightReport:
+    projects: int = 0
+    intents: int = 0
+
+    def summary(self) -> str:
+        return "\n".join(
+            [
+                f"projects: {self.projects}",
+                f"intents: {self.intents}",
+            ]
+        )
+
+
+def migrate_intent_weight(source_path: Path, target_path: Path) -> IntentWeightReport:
+    if source_path == target_path:
+        raise ValueError("target path must differ from source path")
+    if target_path.exists():
+        raise ValueError(f"target path already exists: {target_path}")
+
+    report = IntentWeightReport()
+    source = sqlite3.connect(f"{source_path.resolve().as_uri()}?mode=ro", uri=True)
+    source.row_factory = sqlite3.Row
+    try:
+        facts_columns = {
+            row["name"] for row in source.execute("PRAGMA table_info(facts)").fetchall()
+        }
+        if "created_at" not in facts_columns:
+            raise ValueError(
+                f"{source_path} uses the legacy single-goal schema; "
+                "run 'cairn migrate-db multi-goal' first"
+            )
+        intent_columns = {
+            row["name"] for row in source.execute("PRAGMA table_info(intents)").fetchall()
+        }
+        if "weight" in intent_columns:
+            raise ValueError(
+                f"{source_path} already has intent weights; nothing to migrate"
+            )
+        report.projects = source.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+        report.intents = source.execute("SELECT COUNT(*) FROM intents").fetchone()[0]
+
+        target = sqlite3.connect(str(target_path))
+        target.row_factory = sqlite3.Row
+        try:
+            source.backup(target)
+            project_columns = {
+                row["name"] for row in target.execute("PRAGMA table_info(projects)").fetchall()
+            }
+            for column in ("completed_at", "completed_by_intent"):
+                if column in project_columns:
+                    target.execute(f"ALTER TABLE projects DROP COLUMN {column}")
+            _normalize_second_precision_timestamps(target)
+            target.execute("ALTER TABLE intents ADD COLUMN weight INTEGER NOT NULL DEFAULT 0")
+            target.commit()
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+    return report
+
+
 def _run_migration(
     source: sqlite3.Connection, target: sqlite3.Connection, report: MigrationReport
 ) -> None:
     target.executescript(SCHEMA)
 
-    project_columns = {row[1] for row in source.execute("PRAGMA table_info(projects)").fetchall()}
+    project_columns = {row["name"] for row in source.execute("PRAGMA table_info(projects)").fetchall()}
 
     settings_row = source.execute("SELECT * FROM settings WHERE rowid = 1").fetchone()
     if settings_row is not None:
@@ -90,7 +169,17 @@ def _run_migration(
     for project in projects:
         _migrate_project(source, target, project, project_columns, report)
 
+    _normalize_second_precision_timestamps(target)
     _sync_counters(target)
+
+
+def _normalize_second_precision_timestamps(conn: sqlite3.Connection) -> None:
+    for table, column in _SECOND_PRECISION_TS_COLUMNS:
+        conn.execute(
+            f"UPDATE {table} SET {column} = substr({column},1,19) || '.000Z' "
+            f"WHERE {column} IS NOT NULL AND length({column}) = 20 "
+            f"AND substr({column},20,1) = 'Z'"
+        )
 
 
 def _sync_counters(target: sqlite3.Connection) -> None:

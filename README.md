@@ -190,9 +190,11 @@ Legacy single-goal databases can be converted into a new data folder while prese
 
 ```bash
 mkdir -p migrated-data
-uv run --project cairn cairn migrate-db --db-path ~/.local/share/cairn/cairn.db --target migrated-data/cairn.db
+uv run --project cairn cairn migrate-db multi-goal --db-path ~/.local/share/cairn/cairn.db --target migrated-data/cairn.db
 uv run --project cairn cairn serve --data-folder migrated-data --auth-username admin --auth-password secret --dispatcher-api-key dispatch-secret
 ```
+
+Databases from a version without intent weights can be upgraded the same way with `cairn migrate-db intent-weight`; the server refuses to start on databases written by older versions.
 
 The server's `--data-folder` defaults to `~/.local/share/cairn`, containing `cairn.db` and `dispatcher/<name>.yaml`. WebUI Settings supports creating, editing and deleting dispatcher configurations. Names use letters, digits, underscores and hyphens. Saved changes apply when the dispatcher restarts. The server URL is supplied through `--server-url`; YAML configurations contain the runtime, tasks and workers.
 

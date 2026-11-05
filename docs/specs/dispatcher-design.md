@@ -375,14 +375,16 @@ dispatcher/
 
 | `reason` 输出 | Dispatcher 动作 | 备注 |
 | --- | --- | --- |
-| `data.complete` 存在 | 调用 `POST /projects/{project_id}/complete` | `worker` 使用当前执行该任务的 `workers[].name` |
-| `data.complete` 不存在，且带 `intent` | 调用 `POST /projects/{project_id}/intents` | `creator` 使用当前 Worker 名；`worker` 固定写 `null` |
-| `data` 为空对象 | 不写图 | 不写 Fact / Intent / Complete |
+| `data.complete` 存在 | 调用 `POST /projects/{project_id}/complete`，成功后若带 `recommended_next` 再调用 boost | `worker` 使用当前执行该任务的 `workers[].name` |
+| `data.complete` 不存在，且带 `intent` | 调用 `POST /projects/{project_id}/intents`，本轮创建成功后若带 `recommended_next` 再调用 boost | `creator` 使用当前 Worker 名；`worker` 固定写 `null`；一条 intent 都未创建时本轮作废，不执行 boost |
+| `data` 为空对象 | 若带 `recommended_next` 则调用 boost，否则不写图 | boost 是唯一可能的写入 |
+
+`recommended_next` 指向保留 bootstrap intent 或不在 open intents 中的 id 时，忽略并告警，不调用 boost；为空白字符串时记 info 并忽略。boost 的失败仅记日志，不影响本轮成败。
 
 写回失败的日志语义：
 
 - 如果 `POST /projects/{project_id}/complete` 或 `POST /projects/{project_id}/intents` 返回 `403`，通常表示项目已不再是 `active`，本次任务直接作废，记 `info`
-- 其他写入失败也直接作废，不做立即重试，只记日志
+- 其他写入失败也直接作废，不做立即重试，只记日志；boost 的失败例外，只记日志不作废本轮
 - 无论本轮是否写图，只要项目仍是 `active` 且 reason lease 仍在自己手里，Dispatcher 都会在收尾时调用 `POST /projects/{project_id}/reason/release`；如果项目已 `completed` 或 `stopped`，则由服务端直接清空该 lease
 
 #### 超时与失败
@@ -566,11 +568,12 @@ if running_project_count < runtime.max_running_projects:
 
 1. 如果项目仍处于初始态，先按 `project.bootstrap_enabled` 和 Worker 能力决定路径：未开启或没有支持 `bootstrap` 的 Worker 时直接 `reason`，否则执行 `bootstrap`；若已经存在保留 bootstrap intent，则继续该阶段
 2. 如果满足“新态势”重触发条件，优先派发 `reason`
-3. 否则如果存在未认领 intent，派发 `explore`
+3. 否则如果存在未认领 intent，派发 `explore`；被选中的 intent 先按 `weight` 从高到低，同权重再选最新创建的。`weight` 跨轮次累积保留：被 boost 过但尚未结论的 intent（包括认领超时回到未认领状态的）仍带着更高权重，会先于本轮新建的 weight 0 intent 被派发
 4. `reason` 的去重按“态势”做，而不是按总图变化做：首次只有在当前没有任何 open intent 时才触发；之后只有当前 Fact / Hint 数量增加，或项目从“存在 open intents”进入“没有 open intents”时，才重新触发
 5. 如果 `reason` 返回 `data.complete`，Dispatcher 调用 `POST /projects/{project_id}/complete`
 6. 如果 `reason` 没有返回 `data.complete` 且带 `intent`，Dispatcher 调用 `POST /projects/{project_id}/intents`
-7. 如果 `reason` 既没有返回 `data.complete`，也没有返回 `intent`，则本轮不写图
+7. 如果 `reason` 返回了 `recommended_next`（某个 open intent id），Dispatcher 调用 `POST /projects/{project_id}/intents/{intent_id}/boost` 把该 intent 的权重加一；引用的 id 不在 open intents 中时忽略并告警
+8. 如果 `reason` 既没有返回 `data.complete`，也没有返回 `intent`，则本轮不写图（`recommended_next` 的 boost 仍会执行）
 
 另外：
 
@@ -1085,8 +1088,9 @@ workers:
 ```
 仍有 goal 未满足，但需要提出新 intent 时返回：
 ```json
-{"accepted": true, "data": {"intent": {"from": ["f001"], "description": "..."}}}
+{"accepted": true, "data": {"intent": {"from": ["f001"], "description": "..."}, "recommended_next": "i003"}}
 ```
+`recommended_next` 是 `open_intents` 中某个 intent id，表示下一条应优先探索的 intent（其权重会加一，且提升跨轮次保留直至该 intent 结论）；一般为 null 或省略，省略时优先探索本次新提出的 intent，除非此前被 boost 过的 open intent 仍在等待派发。
 仍有 goal 未满足，且当前不需要提出新 intent 时返回：
 ```json
 {"accepted": true, "data": {}}

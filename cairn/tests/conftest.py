@@ -125,6 +125,7 @@ class FakeClient:
     created_intents: list[tuple[str, list[str], str, str]] = field(default_factory=list)
     released: list[tuple[str, str, str]] = field(default_factory=list)
     released_reasons: list[tuple[str, str]] = field(default_factory=list)
+    boosted: list[tuple[str, str]] = field(default_factory=list)
 
     def get_project(self, _project_id: str) -> ProjectDetail:
         return self.project
@@ -147,6 +148,10 @@ class FakeClient:
     def create_intent(self, project_id: str, from_ids: list[str], description: str, creator: str) -> ApiResult:
         self.created_intents.append((project_id, from_ids, description, creator))
         return ApiResult(201, {})
+
+    def boost_intent(self, project_id: str, intent_id: str) -> ApiResult:
+        self.boosted.append((project_id, intent_id))
+        return ApiResult(200, {})
 
     def release(self, project_id: str, intent_id: str, worker: str) -> ApiResult:
         self.released.append((project_id, intent_id, worker))

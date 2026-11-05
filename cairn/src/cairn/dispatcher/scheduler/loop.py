@@ -19,6 +19,11 @@ from cairn.dispatcher.runtime.startup_healthcheck import format_failure_summary,
 from cairn.dispatcher.scheduler.worker_select import choose_worker
 from cairn.dispatcher.workers.registry import get_driver
 from cairn.dispatcher.tasks.bootstrap import run_bootstrap_task
+from cairn.dispatcher.tasks.common import (
+    BOOTSTRAP_INTENT_CREATOR,
+    BOOTSTRAP_INTENT_DESCRIPTION,
+    is_bootstrap_intent,
+)
 from cairn.dispatcher.tasks.explore import run_explore_task
 from cairn.dispatcher.tasks.reason import run_reason_task
 from cairn.server.auth import DISPATCHER_USERNAME
@@ -27,8 +32,6 @@ from cairn.server.models import Intent, ProjectDetail, ProjectSummary, is_goal_i
 LOG = logging.getLogger(__name__)
 UNHEALTHY_RETRY_AFTER_SECONDS = 5
 REJECTED_RETRY_AFTER_SECONDS = 5
-BOOTSTRAP_INTENT_DESCRIPTION = "bootstrap"
-BOOTSTRAP_INTENT_CREATOR = "dispatcher.bootstrap"
 
 
 @dataclass(slots=True)
@@ -305,7 +308,7 @@ class DispatcherLoop:
             if not intent.to
             and intent.worker is None
             and intent.id not in running_intent_ids
-            and not self._is_bootstrap_intent(intent)
+            and not is_bootstrap_intent(intent)
         ]
         if running_intent_ids and not unclaimed_intents:
             self._log_changed(
@@ -316,9 +319,9 @@ class DispatcherLoop:
                 sorted(running_intent_ids),
             )
         if unclaimed_intents:
-            newest = max(unclaimed_intents, key=lambda i: i.created_at)
+            chosen = max(unclaimed_intents, key=lambda i: (i.weight, i.created_at))
             export_yaml = self.client.export_project(summary.id)
-            return self._dispatch_explore(project, export_yaml, newest)
+            return self._dispatch_explore(project, export_yaml, chosen)
         if project.project.reason is not None:
             self._log_changed(
                 f"{skip_scope}:reason_claimed",
@@ -647,16 +650,8 @@ class DispatcherLoop:
     def _project_open_intent_count(self, project: ProjectDetail) -> int:
         return sum(1 for intent in project.intents if not intent.to)
 
-    def _is_bootstrap_intent(self, intent: Intent) -> bool:
-        return (
-            intent.description == BOOTSTRAP_INTENT_DESCRIPTION
-            and intent.creator == BOOTSTRAP_INTENT_CREATOR
-            and intent.from_ == ["origin"]
-            and not intent.to
-        )
-
     def _get_bootstrap_intent(self, project: ProjectDetail) -> Intent | None:
-        intents = [intent for intent in project.intents if self._is_bootstrap_intent(intent)]
+        intents = [intent for intent in project.intents if is_bootstrap_intent(intent)]
         if not intents:
             return None
         if len(intents) > 1:
@@ -669,7 +664,7 @@ class DispatcherLoop:
             return False
         if not project.intents:
             return True
-        return all(self._is_bootstrap_intent(intent) for intent in project.intents)
+        return all(is_bootstrap_intent(intent) for intent in project.intents)
 
     def _project_requires_bootstrap(self, project: ProjectDetail) -> bool:
         if not project.project.bootstrap_enabled:

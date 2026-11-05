@@ -25,6 +25,8 @@ If no goal is satisfied but new intents should be proposed, return:
 {"accepted": true, "data": {"intents": [{"from": ["f001"], "description": "..."}, {"from": ["f002", "f003"], "description": "..."}]}}
 ```
 
+When returning complete, intents, or empty data, you may add `recommended_next`: the id of an existing open intent from `Open Intents` that should be explored next; its weight is raised so it runs before the intents proposed this round. Keep it null or omit it unless continuing an existing open intent is more valuable than starting the new ones, for example when the graph has gone too deep and breadth is missing.
+
 If no goal is satisfied and no new intent should currently be proposed, return:
 ```json
 {"accepted": true, "data": {}}
@@ -41,6 +43,7 @@ If no goal is satisfied and no new intent should currently be proposed, return:
 - An Intent may originate from multiple facts, including goals (completed goals are ordinary facts).
 - Only a human adds or corrects goals. Never claim a goal is satisfied unless it truly is.
 - Different intents should cover different exploration dimensions and avoid duplication or heavy overlap.
+- `recommended_next` must not reference the reserved bootstrap intent (description `bootstrap`, creator `dispatcher.bootstrap`).
 
 ## Context
 ### Graph

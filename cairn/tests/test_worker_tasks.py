@@ -68,6 +68,204 @@ def test_reason_writes_graph_snapshot_and_creates_intent(monkeypatch) -> None:
     assert path in driver.execute_prompts[0]
 
 
+def test_reason_boosts_recommended_next_intent(monkeypatch) -> None:
+    config = make_config()
+    project = make_project(intents=[make_intent()])
+    client = FakeClient(project)
+    driver = FakeDriver()
+
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: driver)
+    monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(FakeLease()))
+    monkeypatch.setattr(
+        reason,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"intents":[{"from":["f001"],"description":"next step"}],"recommended_next":"i001"}}',
+            "",
+        ),
+    )
+
+    outcome = reason.run_reason_task(
+        config,
+        client,
+        FakeContainerManager(),
+        project,
+        "graph",
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "success"
+    assert client.boosted == [("proj_001", "i001")]
+
+
+def test_reason_does_not_boost_when_no_intent_was_created(monkeypatch) -> None:
+    config = make_config()
+    project = make_project(intents=[make_intent()])
+    client = FakeClient(project)
+    client.create_intent = lambda *_args: ApiResult(404, None, "Fact f999 not found")
+    driver = FakeDriver()
+
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: driver)
+    monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(FakeLease()))
+    monkeypatch.setattr(
+        reason,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"intents":[{"from":["f999"],"description":"next step"}],"recommended_next":"i001"}}',
+            "",
+        ),
+    )
+
+    outcome = reason.run_reason_task(
+        config,
+        client,
+        FakeContainerManager(),
+        project,
+        "graph",
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "failed"
+    assert client.boosted == []
+
+
+def test_reason_does_not_boost_bootstrap_intent(monkeypatch) -> None:
+    config = make_config()
+    intent = make_intent()
+    intent.description = "bootstrap"
+    intent.creator = "dispatcher.bootstrap"
+    intent.from_ = ["origin"]
+    project = make_project(intents=[intent])
+    client = FakeClient(project)
+    driver = FakeDriver()
+
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: driver)
+    monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(FakeLease()))
+    monkeypatch.setattr(
+        reason,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"intents":[{"from":["f001"],"description":"next step"}],"recommended_next":"i001"}}',
+            "",
+        ),
+    )
+
+    outcome = reason.run_reason_task(
+        config,
+        client,
+        FakeContainerManager(),
+        project,
+        "graph",
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "success"
+    assert client.boosted == []
+
+
+def test_reason_ignores_recommended_next_that_is_not_open(monkeypatch) -> None:
+    config = make_config()
+    project = make_project(intents=[make_intent()])
+    client = FakeClient(project)
+    driver = FakeDriver()
+
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: driver)
+    monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(FakeLease()))
+    monkeypatch.setattr(
+        reason,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"intents":[{"from":["f001"],"description":"next step"}],"recommended_next":"i999"}}',
+            "",
+        ),
+    )
+
+    outcome = reason.run_reason_task(
+        config,
+        client,
+        FakeContainerManager(),
+        project,
+        "graph",
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "success"
+    assert client.boosted == []
+
+
+def test_reason_ignores_blank_recommended_next(monkeypatch) -> None:
+    config = make_config()
+    project = make_project(intents=[make_intent()])
+    client = FakeClient(project)
+    driver = FakeDriver()
+
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: driver)
+    monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(FakeLease()))
+    monkeypatch.setattr(
+        reason,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"intents":[{"from":["f001"],"description":"next step"}],"recommended_next":"   "}}',
+            "",
+        ),
+    )
+
+    outcome = reason.run_reason_task(
+        config,
+        client,
+        FakeContainerManager(),
+        project,
+        "graph",
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "success"
+    assert client.boosted == []
+
+
+def test_reason_boosts_recommended_next_on_noop(monkeypatch) -> None:
+    config = make_config()
+    project = make_project(intents=[make_intent()])
+    client = FakeClient(project)
+    driver = FakeDriver()
+
+    monkeypatch.setattr(reason, "get_driver", lambda *_a, **_k: driver)
+    monkeypatch.setattr(reason.HeartbeatLease, "for_reason", _lease_factory(FakeLease()))
+    monkeypatch.setattr(
+        reason,
+        "run_worker_process",
+        lambda *_args, **_kwargs: ProcessResult(
+            0,
+            '{"accepted":true,"data":{"recommended_next":"i001"}}',
+            "",
+        ),
+    )
+
+    outcome = reason.run_reason_task(
+        config,
+        client,
+        FakeContainerManager(),
+        project,
+        "graph",
+        config.workers[0],
+        TaskCancellation(),
+    )
+
+    assert outcome == "success"
+    assert client.created_intents == []
+    assert client.boosted == [("proj_001", "i001")]
+
+
 def test_explore_early_plain_text_exit_uses_conclude_fallback(monkeypatch) -> None:
     config = make_config()
     intent = make_intent()

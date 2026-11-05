@@ -11,7 +11,10 @@ from cairn.dispatcher.logging import configure_logging
 from cairn.dispatcher.scheduler.loop import DispatcherLoop
 from cairn.server import db
 from cairn.server.auth import AuthConfig
-from cairn.server.migrate import migrate_database
+from cairn.server.migrate import (
+    migrate_database,
+    migrate_intent_weight as run_intent_weight_migration,
+)
 
 
 @click.group()
@@ -86,7 +89,12 @@ def serve(
     )
 
 
-@main.command("migrate-db")
+@main.group("migrate-db")
+def migrate_db() -> None:
+    """Convert or upgrade a database between Cairn schema versions."""
+
+
+@migrate_db.command("multi-goal")
 @click.option(
     "--db-path",
     "source_path",
@@ -101,10 +109,35 @@ def serve(
     required=True,
     help="Output path for the converted database (must not exist)",
 )
-def migrate_db(source_path: Path, target_path: Path) -> None:
+def migrate_multi_goal(source_path: Path, target_path: Path) -> None:
     """Convert a legacy single-goal database to the multi-goal schema."""
     try:
         report = migrate_database(source_path, target_path)
+    except (ValueError, sqlite3.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"migrated {source_path} -> {target_path}")
+    click.echo(report.summary())
+
+
+@migrate_db.command("intent-weight")
+@click.option(
+    "--db-path",
+    "source_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="Multi-goal database to upgrade",
+)
+@click.option(
+    "--target",
+    "target_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    required=True,
+    help="Output path for the upgraded database (must not exist)",
+)
+def migrate_intent_weight(source_path: Path, target_path: Path) -> None:
+    """Add the intent weight column to a multi-goal database."""
+    try:
+        report = run_intent_weight_migration(source_path, target_path)
     except (ValueError, sqlite3.Error) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"migrated {source_path} -> {target_path}")

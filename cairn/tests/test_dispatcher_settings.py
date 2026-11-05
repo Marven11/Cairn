@@ -329,7 +329,7 @@ def test_request_and_explicit_database_connections_remain_separate(tmp_path):
 
 def test_failed_database_initialization_is_not_reused(tmp_path, monkeypatch):
     path = tmp_path / "cairn.db"
-    monkeypatch.setattr(db, "_reject_legacy_schema", lambda _conn: (_ for _ in ()).throw(RuntimeError("bad schema")))
+    monkeypatch.setattr(db, "_ensure_current_schema", lambda _conn: (_ for _ in ()).throw(RuntimeError("bad schema")))
     for _ in range(2):
         with pytest.raises(RuntimeError, match="bad schema"):
             db.configure(path)

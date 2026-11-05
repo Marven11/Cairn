@@ -245,6 +245,44 @@ def test_initial_enabled_project_keeps_existing_bootstrap_intent_when_workers_ch
     assert loop._project_requires_bootstrap(project)
 
 
+def test_explore_prefers_higher_weight_intent_then_newest() -> None:
+    loop = _loop()
+    loop.config = make_config()
+    loop.futures = {}
+    old = make_intent("i001")
+    old.worker = None
+    old.weight = 1
+    old.created_at = "2026-01-01T00:00:02Z"
+    new = make_intent("i002")
+    new.worker = None
+    new.created_at = "2026-01-01T00:00:03Z"
+    project = make_project(intents=[old, new])
+    loop.reason_checkpoints["proj_001"] = ReasonCheckpoint(
+        fact_count=3,
+        hint_count=1,
+        open_intent_count=2,
+    )
+    loop.container_manager = type("Containers", (), {"container_name": lambda _self, project_id: project_id})()
+    loop.client = type(
+        "Client",
+        (),
+        {
+            "get_project": lambda _self, _project_id: project,
+            "export_project": lambda _self, _project_id: "graph",
+        },
+    )()
+    dispatched: list[Intent] = []
+    loop._dispatch_explore = lambda _project, _graph, intent: dispatched.append(intent) or True
+
+    assert loop._try_dispatch_project(_summary("proj_001", "active"))
+    assert dispatched[0].id == "i001"
+
+    old.weight = 0
+    dispatched.clear()
+    assert loop._try_dispatch_project(_summary("proj_001", "active"))
+    assert dispatched[0].id == "i002"
+
+
 def test_cancel_inactive_tasks_marks_stopped_and_deleted_projects() -> None:
     loop = _loop()
     stopped = TaskCancellation()

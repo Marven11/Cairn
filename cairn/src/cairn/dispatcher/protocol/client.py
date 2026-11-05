@@ -187,6 +187,13 @@ class CairnClient:
             json={"from": from_ids, "description": description, "creator": creator, "worker": None},
         )
 
+    def boost_intent(self, project_id: str, intent_id: str) -> ApiResult:
+        return self._request_json(
+            "POST",
+            f"/projects/{project_id}/intents/{intent_id}/boost",
+            json={},
+        )
+
     def _request_json(self, method: str, path: str, json: dict[str, Any]) -> ApiResult:
         try:
             response = self._session().request(

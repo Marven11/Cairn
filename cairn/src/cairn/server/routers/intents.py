@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from cairn.server.db import get_conn
 from cairn.server.models import (
@@ -12,6 +12,7 @@ from cairn.server.models import (
 from cairn.server.services import (
     check_project_active,
     get_claimable_open_intent_or_404,
+    get_intent_or_404,
     get_releasable_open_intent_or_404,
     intent_to_model,
     next_fact_id,
@@ -67,6 +68,28 @@ def create_intent(request: Request, project_id: str, body: CreateIntentRequest):
             created_at=now,
             concluded_at=None,
         )
+
+
+@router.post(
+    "/projects/{project_id}/intents/{intent_id}/boost",
+    response_model=Intent,
+)
+def boost_intent(request: Request, project_id: str, intent_id: str):
+    with get_conn(request) as conn:
+        check_project_active(conn, project_id)
+        row = get_intent_or_404(conn, project_id, intent_id)
+        if row["concluded_at"] is not None:
+            raise HTTPException(409, "Intent already concluded")
+
+        conn.execute(
+            "UPDATE intents SET weight = weight + 1 WHERE id = ? AND project_id = ?",
+            (intent_id, project_id),
+        )
+        updated = conn.execute(
+            "SELECT * FROM intents WHERE id = ? AND project_id = ?",
+            (intent_id, project_id),
+        ).fetchone()
+        return intent_to_model(conn, updated, project_id)
 
 
 @router.post(

@@ -9,19 +9,6 @@ from fastapi import Request
 
 DEFAULT_DATA_FOLDER = Path.home() / ".local" / "share" / "cairn"
 
-# timestamp columns that may still hold second-precision values written by
-# older databases, upgraded to milliseconds on startup
-_SECOND_PRECISION_TS_COLUMNS = (
-    ("projects", "created_at"),
-    ("projects", "reason_started_at"),
-    ("projects", "reason_last_heartbeat_at"),
-    ("facts", "created_at"),
-    ("intents", "created_at"),
-    ("intents", "concluded_at"),
-    ("intents", "last_heartbeat_at"),
-    ("hints", "created_at"),
-)
-
 SCHEMA = """\
 CREATE TABLE IF NOT EXISTS settings (
     intent_timeout INTEGER NOT NULL DEFAULT 15,
@@ -60,6 +47,7 @@ CREATE TABLE IF NOT EXISTS intents (
     last_heartbeat_at TEXT,
     created_at TEXT NOT NULL,
     concluded_at TEXT,
+    weight INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (id, project_id)
 );
 
@@ -111,27 +99,13 @@ CREATE TABLE IF NOT EXISTS scoped_counters (
 def configure(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as conn:
-        _reject_legacy_schema(conn)
+        _ensure_current_schema(conn)
         conn.executescript(SCHEMA)
-        # databases written by the version that stored project completion in the
-        # projects table carry two now-unused columns; drop them so the only
-        # live data is the graph, with completion derived from it on read
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
-        for column in ("completed_at", "completed_by_intent"):
-            if column in columns:
-                conn.execute(f"ALTER TABLE projects DROP COLUMN {column}")
-        # databases written before millisecond timestamps store second-precision
-        # values (20 chars ending in Z); normalize them so that ordering and
-        # timeout comparisons stay consistent with millisecond values
-        for table, column in _SECOND_PRECISION_TS_COLUMNS:
-            conn.execute(
-                f"UPDATE {table} SET {column} = substr({column},1,19) || '.000Z' "
-                f"WHERE {column} IS NOT NULL AND length({column}) = 20 "
-                f"AND substr({column},20,1) = 'Z'"
-            )
 
 
-def _reject_legacy_schema(conn: sqlite3.Connection) -> None:
+def _ensure_current_schema(conn: sqlite3.Connection) -> None:
+    """Refuse databases written by older versions instead of upgrading them;
+    conversions are provided by the ``cairn migrate-db`` subcommands only."""
     tables = {
         row["name"]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -142,7 +116,13 @@ def _reject_legacy_schema(conn: sqlite3.Connection) -> None:
     if "created_at" not in columns:
         raise RuntimeError(
             "database uses the legacy single-goal schema; convert it first with: "
-            "cairn migrate-db --db-path <old.db> --target <new.db>"
+            "cairn migrate-db multi-goal --db-path <old.db> --target <new.db>"
+        )
+    intent_columns = {row["name"] for row in conn.execute("PRAGMA table_info(intents)")}
+    if "weight" not in intent_columns:
+        raise RuntimeError(
+            "database predates intent weights; upgrade it first with: "
+            "cairn migrate-db intent-weight --db-path <old.db> --target <new.db>"
         )
 
 

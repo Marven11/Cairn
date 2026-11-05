@@ -23,7 +23,7 @@ def test_parse_json_output_extracts_object_from_markdown_noise() -> None:
 
 
 def test_reason_payload_limits_number_of_intents() -> None:
-    kind, intents = validate_reason_payload(
+    kind, intents, recommended_next = validate_reason_payload(
         {
             "accepted": True,
             "data": {
@@ -39,6 +39,7 @@ def test_reason_payload_limits_number_of_intents() -> None:
 
     assert kind == "intents"
     assert intents == [{"from": ["f001"], "description": "one"}]
+    assert recommended_next is None
 
 
 def test_reason_payload_requires_intent_when_none_are_open() -> None:
@@ -51,7 +52,7 @@ def test_reason_payload_requires_intent_when_none_are_open() -> None:
 
 
 def test_reason_payload_complete_normalizes_goals() -> None:
-    kind, complete = validate_reason_payload(
+    kind, complete, recommended_next = validate_reason_payload(
         {
             "accepted": True,
             "data": {
@@ -64,6 +65,7 @@ def test_reason_payload_complete_normalizes_goals() -> None:
 
     assert kind == "complete"
     assert complete["goals"] == ["g001"]
+    assert recommended_next is None
 
 
 def test_intent_payload_deduplicates_from_ids() -> None:
@@ -81,6 +83,82 @@ def test_reason_payload_complete_rejects_empty_goals_list() -> None:
                 "accepted": True,
                 "data": {
                     "complete": {"from": ["f001"], "goals": [], "description": "done"}
+                },
+            },
+            open_intents_empty=False,
+            max_intents=3,
+        )
+
+
+def test_reason_payload_parses_recommended_next() -> None:
+    kind, intents, recommended_next = validate_reason_payload(
+        {
+            "accepted": True,
+            "data": {
+                "intents": [{"from": ["f001"], "description": "one"}],
+                "recommended_next": " i003 ",
+            },
+        },
+        open_intents_empty=False,
+        max_intents=3,
+    )
+
+    assert kind == "intents"
+    assert recommended_next == "i003"
+
+
+def test_reason_payload_recommended_next_accepts_null_and_bare_payload() -> None:
+    kind, _data, recommended_next = validate_reason_payload(
+        {"intents": [{"from": ["f001"], "description": "one"}], "recommended_next": None},
+        open_intents_empty=False,
+        max_intents=3,
+    )
+
+    assert kind == "intents"
+    assert recommended_next is None
+
+
+def test_reason_payload_recommended_next_passes_blank_string_through() -> None:
+    _kind, _data, recommended_next = validate_reason_payload(
+        {
+            "accepted": True,
+            "data": {
+                "intents": [{"from": ["f001"], "description": "one"}],
+                "recommended_next": "   ",
+            },
+        },
+        open_intents_empty=False,
+        max_intents=3,
+    )
+
+    assert recommended_next == ""
+
+
+def test_reason_payload_bare_recommended_next_only_payload_is_noop() -> None:
+    kind, data, recommended_next = validate_reason_payload(
+        {"recommended_next": " i003 "},
+        open_intents_empty=False,
+        max_intents=3,
+    )
+
+    assert kind == "noop"
+    assert data is None
+    assert recommended_next == "i003"
+
+
+def test_reason_payload_rejects_bare_empty_payload() -> None:
+    with pytest.raises(ValueError, match="accepted must be true or false"):
+        validate_reason_payload({}, open_intents_empty=False, max_intents=3)
+
+
+def test_reason_payload_recommended_next_rejects_non_string() -> None:
+    with pytest.raises(ValueError, match="recommended_next"):
+        validate_reason_payload(
+            {
+                "accepted": True,
+                "data": {
+                    "intents": [{"from": ["f001"], "description": "one"}],
+                    "recommended_next": 3,
                 },
             },
             open_intents_empty=False,

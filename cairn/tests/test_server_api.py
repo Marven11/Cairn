@@ -162,6 +162,39 @@ def test_intent_creation_accepts_goals_but_rejects_mismatched_worker(client: Tes
     ).status_code == 404
 
 
+def test_boost_increments_intent_weight(client: TestClient) -> None:
+    project_id = _create_project(client)
+    intent_id = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "scan", "creator": "reasoner", "worker": None},
+    ).json()["id"]
+
+    first = client.post(f"/projects/{project_id}/intents/{intent_id}/boost")
+    assert first.status_code == 200
+    assert first.json()["weight"] == 1
+    second = client.post(f"/projects/{project_id}/intents/{intent_id}/boost")
+    assert second.status_code == 200
+    assert second.json()["weight"] == 2
+    weight = client.get(f"/projects/{project_id}").json()["intents"][0]["weight"]
+    assert weight == 2
+    assert f"weight: {weight}" in client.get(f"/projects/{project_id}/export?format=yaml").text
+
+
+def test_boost_rejects_missing_and_concluded_intents(client: TestClient) -> None:
+    project_id = _create_project(client)
+    assert client.post(f"/projects/{project_id}/intents/i999/boost").status_code == 404
+
+    intent_id = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "scan", "creator": "reasoner", "worker": "reasoner"},
+    ).json()["id"]
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/conclude",
+        json={"worker": "reasoner", "description": "done"},
+    ).status_code == 200
+    assert client.post(f"/projects/{project_id}/intents/{intent_id}/boost").status_code == 409
+
+
 def test_settings_and_export_are_backed_by_the_same_database(client: TestClient) -> None:
     project_id = _create_project(client)
 

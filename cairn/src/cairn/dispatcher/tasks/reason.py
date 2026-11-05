@@ -21,6 +21,7 @@ from cairn.dispatcher.tasks.common import (
     cancel_reason,
     completed_goal_ids,
     did_timeout,
+    is_bootstrap_intent,
     preview,
     run_worker_process,
     task_healthcheck_enabled,
@@ -30,6 +31,54 @@ from cairn.dispatcher.workers.registry import get_driver
 from cairn.server.models import ProjectDetail, is_goal_id
 
 LOG = logging.getLogger(__name__)
+
+
+def _boost_recommended_intent(
+    client: CairnClient,
+    project: ProjectDetail,
+    worker: WorkerConfig,
+    recommended_next: str | None,
+) -> None:
+    if recommended_next is None:
+        return
+    if not recommended_next:
+        LOG.info(
+            "reason recommended_next is blank project=%s worker=%s",
+            project.project.id,
+            worker.name,
+        )
+        return
+    open_intent_ids = {
+        intent.id for intent in project.intents if not intent.to and not is_bootstrap_intent(intent)
+    }
+    if recommended_next not in open_intent_ids:
+        all_open_ids = [intent.id for intent in project.intents if not intent.to]
+        LOG.warning(
+            "reason recommended_next is not a boostable open intent project=%s worker=%s recommended_next=%s open_intents=%s",
+            project.project.id,
+            worker.name,
+            recommended_next,
+            all_open_ids,
+        )
+        return
+    response = client.boost_intent(project.project.id, recommended_next)
+    if response.status_code == 403:
+        LOG.info("project became inactive during reason boost project=%s worker=%s intent=%s", project.project.id, worker.name, recommended_next)
+        return
+    if response.status_code == 409:
+        LOG.info("reason boost lost race project=%s worker=%s intent=%s", project.project.id, worker.name, recommended_next)
+        return
+    if not response.ok:
+        LOG.warning(
+            "reason boost failed project=%s worker=%s intent=%s status=%s body=%s",
+            project.project.id,
+            worker.name,
+            recommended_next,
+            response.status_code,
+            response.text,
+        )
+        return
+    LOG.info("reason boosted intent project=%s worker=%s intent=%s", project.project.id, worker.name, recommended_next)
 
 
 def run_reason_task(
@@ -188,7 +237,7 @@ def run_reason_task(
         try:
             model_output = driver.extract_response_text(result.stdout, result.stderr)
             payload = parse_json_output(model_output)
-            kind, data = validate_reason_payload(
+            kind, data, recommended_next = validate_reason_payload(
                 payload, open_intents_empty=not open_intents, max_intents=config.tasks.reason.max_intents,
             )
         except Exception as exc:
@@ -253,6 +302,7 @@ def run_reason_task(
                 execute_ms,
                 total_ms,
             )
+            _boost_recommended_intent(client, project, worker, recommended_next)
             response_project = response.data.get("project") if isinstance(response.data, dict) else None
             if isinstance(response_project, dict) and response_project.get("status") == "completed":
                 LOG.info(
@@ -309,7 +359,9 @@ def run_reason_task(
                     total_ms,
                 )
                 return "failed"
+            _boost_recommended_intent(client, project, worker, recommended_next)
             return "success"
+        _boost_recommended_intent(client, project, worker, recommended_next)
         LOG.info(
             "reason finished without graph change project=%s worker=%s execute_ms=%s total_ms=%s",
             project.project.id,

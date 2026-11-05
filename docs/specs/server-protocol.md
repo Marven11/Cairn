@@ -139,6 +139,7 @@ worker          # 执行者标识，语义随状态变化（见下方说明）
 last_heartbeat_at  # 最后一次心跳时间，仅尚无结论时有意义，永久保留，不清空
 created_at
 concluded_at    # 结论时间，null 表示尚无结论
+weight           # 调度权重，越大越先被派发；创建时为 0，由 boost 加一
 ```
 
 `creator` 在创建时写入，标识谁洞察局势提出了这个探索方向，不可变。`worker` 可为空；若创建时同时认领，则 `worker` 必须等于 `creator`，并写入首个 `last_heartbeat_at`。
@@ -365,7 +366,8 @@ Body：
       "worker": "agent-A",
       "last_heartbeat_at": "2026-03-21T10:02:00Z",
       "created_at": "2026-03-21T10:01:00Z",
-      "concluded_at": "2026-03-21T10:02:00Z"
+      "concluded_at": "2026-03-21T10:02:00Z",
+      "weight": 0
     },
     {
       "id": "i002",
@@ -376,7 +378,8 @@ Body：
       "worker": "agent-B",
       "last_heartbeat_at": "2026-03-21T10:04:00Z",
       "created_at": "2026-03-21T10:03:00Z",
-      "concluded_at": null
+      "concluded_at": null,
+      "weight": 1
     }
   ],
   "hints": [
@@ -548,7 +551,7 @@ Body：
 }
 ```
 
-`from` 为数组，至少包含一个 Fact id，可以包含 goal（包括尚未完成的 goal——从 goal 出发表示朝该目标推进；已完成的 goal 则是普通出发点）。`worker` 可为 `null` 或等于 `creator`；`null` 表示只声明不认领，等于 `creator` 表示声明并立即认领。多个 Fact 共同驱动同一次探索时，全部列入 `from`，完整保留因果关系。例如：
+`from` 为数组，至少包含一个 Fact id，可以包含 goal（包括尚未完成的 goal——从 goal 出发表示朝该目标推进；已完成的 goal 则是普通出发点）。`worker` 可为 `null` 或等于 `creator`；`null` 表示只声明不认领，等于 `creator` 表示声明并立即认领。新建 Intent 的 `weight` 为 0。多个 Fact 共同驱动同一次探索时，全部列入 `from`，完整保留因果关系。例如：
 
 服务端不校验 `description` 的业务语义，因此像 `description = "bootstrap"` 这样的保留 intent 也只是普通 Intent。是否把它解释为“项目最初阶段的直接推进尝试”，由消费者自己约定。
 
@@ -597,6 +600,14 @@ Body：
 
 ---
 
+#### POST /projects/{project_id}/intents/{intent_id}/boost
+
+把一条尚无结论的 Intent 的 `weight` 加一。消费者用它落实 `reason` 输出的 `recommended_next`：权重更高的 Intent 会先被派发。若该 Intent 已有结论，返回 409。Boost 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
+
+响应：更新后的 Intent 对象。
+
+---
+
 #### POST /projects/{project_id}/intents/{intent_id}/conclude
 
 探索结束，总是产出一个新的普通 Fact 并将 Intent 结论落定。conclude 不完成任何 goal；goal 的完成统一通过 `POST /projects/{project_id}/complete` 声明。原子操作。仅对尚无结论的 Intent 有效。claim 规则与 heartbeat 相同：未认领可直接 conclude；由当前 `worker` conclude；若被其他消费者占用且未超时，返回 409。Conclude 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
@@ -631,7 +642,8 @@ Body：
     "worker": "agent-B",
     "last_heartbeat_at": "2026-03-21T10:05:00Z",
     "created_at": "2026-03-21T10:03:00Z",
-    "concluded_at": "2026-03-21T10:05:00Z"
+    "concluded_at": "2026-03-21T10:05:00Z",
+    "weight": 0
   }
 }
 ```
@@ -765,6 +777,7 @@ intents:
     worker: "agent-A"
     created_at: "2026-03-21 18:01:00"
     concluded_at: "2026-03-21 18:02:00"
+    weight: 0
 
   - from: [f001]
     to: [f002]
@@ -773,6 +786,7 @@ intents:
     worker: "agent-B"
     created_at: "2026-03-21 18:02:00"
     concluded_at: "2026-03-21 18:04:00"
+    weight: 0
 
   - from: [f002]
     to: [f003]
@@ -781,6 +795,7 @@ intents:
     worker: "agent-B"
     created_at: "2026-03-21 18:04:00"
     concluded_at: "2026-03-21 18:05:00"
+    weight: 0
 
   - from: [f003]
     to: [f004]
@@ -789,6 +804,7 @@ intents:
     worker: "agent-A"
     created_at: "2026-03-21 18:05:00"
     concluded_at: "2026-03-21 18:05:30"
+    weight: 0
 
   - from: [f004]
     to: [f005]
@@ -797,6 +813,7 @@ intents:
     worker: "agent-C"
     created_at: "2026-03-21 18:05:30"
     concluded_at: "2026-03-21 18:06:00"
+    weight: 0
 
   - from: [f002, f004]
     to: [f006]
@@ -805,6 +822,7 @@ intents:
     worker: "agent-B"
     created_at: "2026-03-21 18:05:30"
     concluded_at: "2026-03-21 18:06:00"
+    weight: 0
 
   - from: [f006]
     to: [f007]
@@ -813,6 +831,7 @@ intents:
     worker: "agent-B"
     created_at: "2026-03-21 18:06:00"
     concluded_at: "2026-03-21 18:07:00"
+    weight: 0
 
   - from: [f007]
     to: [f008]
@@ -821,6 +840,7 @@ intents:
     worker: "agent-A"
     created_at: "2026-03-21 18:07:00"
     concluded_at: "2026-03-21 18:08:00"
+    weight: 0
 
   - from: [f008]
     to: [f009, g001]
@@ -829,6 +849,7 @@ intents:
     worker: "agent-A"
     created_at: "2026-03-21 18:08:00"
     concluded_at: "2026-03-21 18:08:01"
+    weight: 0
 ```
 
 尚无结论的 Intent 示例（`worker` 不为 null 表示有消费者正在处理）：
@@ -841,6 +862,7 @@ intents:
     worker: "agent-C"
     created_at: "2026-03-21 18:09:00"
     concluded_at: null
+    weight: 1
 ```
 
 ---
@@ -883,7 +905,7 @@ intents:
    f. 回到步骤 1
 
 4. 若图中存在未认领的普通 Intent（worker=null）：
-   a. 选择一条可认领 Intent
+   a. 选择一条可认领 Intent（weight 更高者优先，同 weight 选最新创建的）
    b. POST /projects/{id}/intents/{intent_id}/heartbeat
         { worker: "dispatcher-worker-A" }
       认领成功后，派发一次 `explore`
@@ -905,14 +927,20 @@ intents:
    c. 若 `reason` 返回完成结论（标记满足若干 goal）：
       POST /projects/{id}/complete
         { from: ["f008"], goals: ["g001"], description: "flag{abc} 满足 g001 要求", worker: "dispatcher-worker-A" }
+      若 `reason` 同时返回 `recommended_next`（某个 open intent id），继续：
+      POST /projects/{id}/intents/{intent_id}/boost
       若全部 goal 已完成，项目转入 `completed`，流程结束；否则回到步骤 1 继续剩余 goal
    d. 若 `reason` 返回新的 intent：
       POST /projects/{id}/intents
         { from: ["f003"], description: "尝试 SQL 注入", creator: "dispatcher-worker-A", worker: null }
+      若 `reason` 同时返回 `recommended_next`（某个 open intent id），继续：
+      POST /projects/{id}/intents/{intent_id}/boost
       然后 POST /projects/{id}/reason/release
         { worker: "dispatcher-worker-A" }
    e. 若 `reason` 未返回完成结论，也未返回新 intent：
-      POST /projects/{id}/reason/release
+      若 `reason` 同时返回 `recommended_next`（某个 open intent id），先：
+      POST /projects/{id}/intents/{intent_id}/boost
+      然后 POST /projects/{id}/reason/release
         { worker: "dispatcher-worker-A" }
       本轮不写图
    f. 若 `reason` 执行失败、超时或需要放弃：

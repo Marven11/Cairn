@@ -34,6 +34,7 @@ class Intent(BaseModel):
     last_heartbeat_at: str | None = None
     created_at: str
     concluded_at: str | None = None
+    weight: int = 0
 
     model_config = {"populate_by_name": True}
 

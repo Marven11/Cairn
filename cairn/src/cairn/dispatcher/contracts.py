@@ -28,7 +28,9 @@ def _is_dict(value: Any) -> bool:
 def _looks_like_reason_data(payload: dict[str, Any]) -> bool:
     if not isinstance(payload, dict):
         return False
-    keys = set(payload)
+    keys = set(payload) - {"recommended_next"}
+    if not keys:
+        return "recommended_next" in payload
     if keys == {"complete"}:
         complete = payload["complete"]
         return isinstance(complete, dict) and "from" in complete and "description" in complete
@@ -73,18 +75,28 @@ def _looks_like_explore_data(payload: dict[str, Any]) -> bool:
     return isinstance(payload, dict) and set(payload) == {"description"}
 
 
+def _validate_recommended_next(data: dict[str, Any]) -> str | None:
+    value = data.get("recommended_next")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("recommended_next must be an intent id string")
+    return value.strip()
+
+
 def validate_reason_payload(
     payload: dict[str, Any], open_intents_empty: bool, max_intents: int,
-) -> tuple[str, dict[str, Any] | list[dict[str, Any]] | None]:
+) -> tuple[str, dict[str, Any] | list[dict[str, Any]] | None, str | None]:
     accepted, data = _unwrap_wrapped_payload(payload)
     if accepted is False:
-        return "rejected", None
+        return "rejected", None, None
     if accepted is None:
         if not _looks_like_reason_data(payload):
             raise ValueError("accepted must be true or false")
         data = payload
     if not isinstance(data, dict):
         raise ValueError("accepted must be true or false")
+    recommended_next = _validate_recommended_next(data)
     complete = data.get("complete")
     intents = data.get("intents")
     # backward compat: accept singular "intent" key from LLMs
@@ -98,7 +110,7 @@ def validate_reason_payload(
         if not isinstance(complete, dict) or "from" not in complete or "description" not in complete:
             raise ValueError("invalid complete payload")
         complete = {**complete, "goals": _validate_complete_goals(complete)}
-        return "complete", complete
+        return "complete", complete, recommended_next
     if intents is not None:
         if not isinstance(intents, list):
             raise ValueError("intents must be an array")
@@ -109,11 +121,11 @@ def validate_reason_payload(
             raise ValueError("intents must not be empty when open_intents is empty")
         intents = intents[:max_intents]
         if not intents:
-            return "noop", None
-        return "intents", intents
+            return "noop", None, recommended_next
+        return "intents", intents, recommended_next
     if open_intents_empty:
         raise ValueError("intents is required when open_intents is empty")
-    return "noop", None
+    return "noop", None, recommended_next
 
 
 def validate_bootstrap_execute_payload(

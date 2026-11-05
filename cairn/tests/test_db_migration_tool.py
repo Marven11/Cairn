@@ -3,9 +3,11 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+from click.testing import CliRunner
 
+from cairn.cli import main
 from cairn.server import db
-from cairn.server.migrate import migrate_database
+from cairn.server.migrate import migrate_database, migrate_intent_weight
 
 LEGACY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -146,7 +148,7 @@ def test_migrate_database_converts_goals_and_targets(tmp_path) -> None:
         ).fetchall()
         assert [(row["id"]) for row in proj1_facts] == ["origin", "g001", "f001"]
         # origin and the goal inherit the project creation time; f001 inherits the conclude time;
-        # configure normalizes second-precision timestamps to millisecond precision
+        # the migration tool normalizes second-precision timestamps to millisecond precision
         assert proj1_facts[0]["created_at"] == "2026-01-01T00:00:00.000Z"
         assert proj1_facts[1]["created_at"] == "2026-01-01T00:00:00.000Z"
         assert proj1_facts[2]["created_at"] == "2026-01-01T00:01:00.000Z"
@@ -261,3 +263,194 @@ def test_migrate_database_rejects_current_schema_source_and_cleans_target(tmp_pa
     with pytest.raises(ValueError, match="multi-goal schema"):
         migrate_database(source, target)
     assert not target.exists()
+
+
+MULTI_GOAL_HEAD_SCHEMA = """
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    bootstrap_enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    completed_by_intent TEXT,
+    reason_worker TEXT,
+    reason_trigger TEXT,
+    reason_started_at TEXT,
+    reason_last_heartbeat_at TEXT
+);
+CREATE TABLE facts (
+    id TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    description TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    creator TEXT,
+    PRIMARY KEY (id, project_id)
+);
+CREATE TABLE intents (
+    id TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    description TEXT NOT NULL,
+    creator TEXT NOT NULL,
+    worker TEXT,
+    last_heartbeat_at TEXT,
+    created_at TEXT NOT NULL,
+    concluded_at TEXT,
+    PRIMARY KEY (id, project_id)
+);
+CREATE TABLE intent_sources (
+    intent_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    fact_id TEXT NOT NULL,
+    PRIMARY KEY (intent_id, project_id, fact_id),
+    FOREIGN KEY (intent_id, project_id) REFERENCES intents(id, project_id) ON DELETE CASCADE
+);
+CREATE TABLE intent_targets (
+    intent_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    fact_id TEXT NOT NULL,
+    PRIMARY KEY (intent_id, project_id, fact_id),
+    FOREIGN KEY (intent_id, project_id) REFERENCES intents(id, project_id) ON DELETE CASCADE
+);
+CREATE TABLE hints (
+    id TEXT NOT NULL,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    creator TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (id, project_id)
+);
+CREATE TABLE counters (
+    name TEXT PRIMARY KEY,
+    value INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE scoped_counters (
+    project_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    value INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (project_id, kind)
+);
+"""
+
+
+def _build_multi_goal_head_database(path) -> None:
+    """A database written by the multi-goal version before intent weights:
+    project completion still lives in the projects table and timestamps hold
+    second-precision values."""
+    conn = sqlite3.connect(path)
+    conn.executescript(MULTI_GOAL_HEAD_SCHEMA)
+    with conn:
+        conn.execute(
+            "INSERT INTO projects (id, title, status, created_at, completed_at, completed_by_intent) "
+            "VALUES ('proj_001', 'old', 'completed', '2026-01-01T00:00:00Z', '2026-01-01T00:05:00Z', 'i001')"
+        )
+        conn.execute(
+            "INSERT INTO facts (id, project_id, description, created_at) VALUES ('origin', 'proj_001', 'start', '2026-01-01T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO facts (id, project_id, description, created_at) VALUES ('g001', 'proj_001', 'goal', '2026-01-01T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO facts (id, project_id, description, created_at, creator) VALUES ('f001', 'proj_001', 'proof', '2026-01-01T00:05:00Z', 'reasoner')"
+        )
+        conn.execute(
+            "INSERT INTO intents (id, project_id, description, creator, worker, last_heartbeat_at, created_at, concluded_at) "
+            "VALUES ('i001', 'proj_001', 'done', 'reasoner', 'reasoner', '2026-01-01T00:05:00Z', '2026-01-01T00:05:00Z', '2026-01-01T00:05:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO intent_sources (intent_id, project_id, fact_id) VALUES ('i001', 'proj_001', 'origin')"
+        )
+        conn.execute(
+            "INSERT INTO intent_targets (intent_id, project_id, fact_id) VALUES ('i001', 'proj_001', 'f001')"
+        )
+        conn.execute(
+            "INSERT INTO intent_targets (intent_id, project_id, fact_id) VALUES ('i001', 'proj_001', 'g001')"
+        )
+    conn.close()
+
+
+def test_migrate_intent_weight_adds_column_and_keeps_data(tmp_path) -> None:
+    source = tmp_path / "head.db"
+    target = tmp_path / "cairn.db"
+    _build_multi_goal_head_database(source)
+
+    report = migrate_intent_weight(source, target)
+
+    assert report.projects == 1
+    assert report.intents == 1
+
+    conn = sqlite3.connect(target)
+    conn.row_factory = sqlite3.Row
+    try:
+        intent_columns = {row[1] for row in conn.execute("PRAGMA table_info(intents)")}
+        assert "weight" in intent_columns
+        project_columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
+        assert "completed_at" not in project_columns
+        assert "completed_by_intent" not in project_columns
+        row = conn.execute("SELECT description, weight FROM intents WHERE id = 'i001'").fetchone()
+        assert row["description"] == "done"
+        assert row["weight"] == 0
+        row = conn.execute("SELECT concluded_at FROM intents WHERE id = 'i001'").fetchone()
+        assert row["concluded_at"] == "2026-01-01T00:05:00.000Z"
+        row = conn.execute("SELECT description FROM facts WHERE id = 'origin'").fetchone()
+        assert row["description"] == "start"
+    finally:
+        conn.close()
+
+    db.configure(target)
+    with db.connect(target) as conn:
+        row = conn.execute("SELECT weight FROM intents WHERE id = 'i001'").fetchone()
+        assert row["weight"] == 0
+
+
+def test_migrate_intent_weight_rejects_wrong_sources(tmp_path) -> None:
+    legacy = tmp_path / "legacy.db"
+    _build_legacy_database(legacy)
+    with pytest.raises(ValueError):
+        migrate_intent_weight(legacy, tmp_path / "out.db")
+
+    current = tmp_path / "current.db"
+    with sqlite3.connect(current) as conn:
+        conn.executescript(db.SCHEMA)
+    with pytest.raises(ValueError):
+        migrate_intent_weight(current, tmp_path / "out.db")
+    assert not (tmp_path / "out.db").exists()
+
+
+def test_migrate_intent_weight_rejects_same_and_existing_target(tmp_path) -> None:
+    source = tmp_path / "head.db"
+    _build_multi_goal_head_database(source)
+
+    with pytest.raises(ValueError):
+        migrate_intent_weight(source, source)
+
+    target = tmp_path / "out.db"
+    target.write_text("existing", encoding="utf-8")
+    with pytest.raises(ValueError):
+        migrate_intent_weight(source, target)
+
+
+def test_migrate_db_cli_exposes_version_subcommands(tmp_path) -> None:
+    runner = CliRunner()
+    legacy = tmp_path / "legacy.db"
+    _build_legacy_database(legacy)
+
+    result = runner.invoke(
+        main,
+        ["migrate-db", "multi-goal", "--db-path", str(legacy), "--target", str(tmp_path / "a.db")],
+    )
+    assert result.exit_code == 0
+
+    head = tmp_path / "head.db"
+    _build_multi_goal_head_database(head)
+    result = runner.invoke(
+        main,
+        ["migrate-db", "intent-weight", "--db-path", str(head), "--target", str(tmp_path / "b.db")],
+    )
+    assert result.exit_code == 0
+    with sqlite3.connect(tmp_path / "b.db") as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(intents)")}
+        assert "weight" in columns
+
+    result = runner.invoke(main, ["migrate-db", "intent-weight", "--db-path", str(head), "--target", str(tmp_path / "b.db")])
+    assert result.exit_code != 0

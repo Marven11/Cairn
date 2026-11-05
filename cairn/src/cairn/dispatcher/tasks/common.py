@@ -11,12 +11,23 @@ from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
 from cairn.dispatcher.runtime.process import ProcessResult
-from cairn.server.models import ProjectDetail, is_goal_id
+from cairn.server.models import Intent, ProjectDetail, is_goal_id
 
 PROCESS_COMMUNICATE_GRACE_SECONDS = 15
 LOG_PREVIEW_LIMIT = 1200
 GRAPH_SNAPSHOT_ROOT = "/tmp/cairn-prompts"
+BOOTSTRAP_INTENT_DESCRIPTION = "bootstrap"
+BOOTSTRAP_INTENT_CREATOR = "dispatcher.bootstrap"
 LOG = logging.getLogger(__name__)
+
+
+def is_bootstrap_intent(intent: Intent) -> bool:
+    return (
+        intent.description == BOOTSTRAP_INTENT_DESCRIPTION
+        and intent.creator == BOOTSTRAP_INTENT_CREATOR
+        and intent.from_ == ["origin"]
+        and not intent.to
+    )
 
 
 def completed_goal_ids(project: ProjectDetail) -> set[str]:
