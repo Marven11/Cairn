@@ -12,10 +12,11 @@ DEFAULT_DATA_FOLDER = Path.home() / ".local" / "share" / "cairn"
 SCHEMA = """\
 CREATE TABLE IF NOT EXISTS settings (
     intent_timeout INTEGER NOT NULL DEFAULT 15,
-    reason_timeout INTEGER NOT NULL DEFAULT 15
+    reason_timeout INTEGER NOT NULL DEFAULT 15,
+    dispatcher_heartbeat_timeout INTEGER NOT NULL DEFAULT 45
 );
 
-INSERT OR IGNORE INTO settings (rowid, intent_timeout, reason_timeout) VALUES (1, 15, 15);
+INSERT OR IGNORE INTO settings (rowid, intent_timeout, reason_timeout, dispatcher_heartbeat_timeout) VALUES (1, 15, 15, 45);
 
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
@@ -123,6 +124,12 @@ def _ensure_current_schema(conn: sqlite3.Connection) -> None:
         raise RuntimeError(
             "database predates intent weights; upgrade it first with: "
             "cairn migrate-db intent-weight --db-path <old.db> --target <new.db>"
+        )
+    settings_columns = {row["name"] for row in conn.execute("PRAGMA table_info(settings)")}
+    if "dispatcher_heartbeat_timeout" not in settings_columns:
+        raise RuntimeError(
+            "database predates the dispatcher heartbeat setting; upgrade it first with: "
+            "cairn migrate-db settings-heartbeat --db-path <old.db> --target <new.db>"
         )
 
 

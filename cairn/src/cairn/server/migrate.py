@@ -12,6 +12,8 @@
   deprecated project completion columns it may still carry, rewrite
   second-precision timestamps to milliseconds, and add the
   ``intents.weight`` column.
+- ``settings-heartbeat``: copy a database that predates multi-dispatcher
+  support and add the ``settings.dispatcher_heartbeat_timeout`` column.
 """
 
 from __future__ import annotations
@@ -142,6 +144,64 @@ def migrate_intent_weight(source_path: Path, target_path: Path) -> IntentWeightR
                     target.execute(f"ALTER TABLE projects DROP COLUMN {column}")
             _normalize_second_precision_timestamps(target)
             target.execute("ALTER TABLE intents ADD COLUMN weight INTEGER NOT NULL DEFAULT 0")
+            target.commit()
+        finally:
+            target.close()
+    finally:
+        source.close()
+
+    return report
+
+
+@dataclass
+class SettingsHeartbeatReport:
+    settings: int = 0
+
+    def summary(self) -> str:
+        return f"settings rows: {self.settings}"
+
+
+def migrate_settings_heartbeat(source_path: Path, target_path: Path) -> SettingsHeartbeatReport:
+    if source_path == target_path:
+        raise ValueError("target path must differ from source path")
+    if target_path.exists():
+        raise ValueError(f"target path already exists: {target_path}")
+
+    report = SettingsHeartbeatReport()
+    source = sqlite3.connect(f"{source_path.resolve().as_uri()}?mode=ro", uri=True)
+    source.row_factory = sqlite3.Row
+    try:
+        facts_columns = {
+            row["name"] for row in source.execute("PRAGMA table_info(facts)").fetchall()
+        }
+        if "created_at" not in facts_columns:
+            raise ValueError(
+                f"{source_path} uses the legacy single-goal schema; run 'cairn migrate-db multi-goal' first"
+            )
+        intent_columns = {
+            row["name"] for row in source.execute("PRAGMA table_info(intents)").fetchall()
+        }
+        if "weight" not in intent_columns:
+            raise ValueError(
+                f"{source_path} predates intent weights; run 'cairn migrate-db intent-weight' first"
+            )
+
+        settings_columns = {
+            row["name"] for row in source.execute("PRAGMA table_info(settings)").fetchall()
+        }
+        if "dispatcher_heartbeat_timeout" in settings_columns:
+            raise ValueError(
+                f"{source_path} already has the dispatcher heartbeat setting; nothing to migrate"
+            )
+        report.settings = source.execute("SELECT COUNT(*) FROM settings").fetchone()[0]
+
+        target = sqlite3.connect(str(target_path))
+        target.row_factory = sqlite3.Row
+        try:
+            source.backup(target)
+            target.execute(
+                "ALTER TABLE settings ADD COLUMN dispatcher_heartbeat_timeout INTEGER NOT NULL DEFAULT 45"
+            )
             target.commit()
         finally:
             target.close()

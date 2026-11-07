@@ -1,3 +1,5 @@
+import sqlite3
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from cairn.server.auth import require_user
@@ -10,15 +12,16 @@ from cairn.server.models import (
     CreateProjectRequest,
     Fact,
     GoalResponse,
-    Hint,
     HeartbeatRequest,
+    Hint,
     ProjectDetail,
     ProjectMeta,
     ProjectSummary,
     ReasonClaimRequest,
-    UpdateProjectTitleRequest,
     UpdateProjectStatusRequest,
+    UpdateProjectTitleRequest,
 )
+from cairn.server.runtime import DispatcherRegistry, dispatcher_info, is_record_online
 from cairn.server.services import (
     build_intents,
     check_project_active,
@@ -41,6 +44,17 @@ from cairn.server.services import (
 )
 
 router = APIRouter(tags=["projects"])
+
+
+def _meta_with_runtime(request: Request, conn: sqlite3.Connection, row: sqlite3.Row) -> ProjectMeta:
+    registry: DispatcherRegistry = request.app.state.dispatcher_registry
+    meta = project_meta_from_row(conn, row)
+    record = registry.ensure_assignment(meta.id)
+    offline = record is None or not is_record_online(record)
+    if meta.status == "active" and offline:
+        meta.status = "halted"
+    meta.dispatcher = dispatcher_info(record) if record is not None else None
+    return meta
 
 
 @router.get("/projects", response_model=list[ProjectSummary])
@@ -81,10 +95,9 @@ def list_projects(request: Request):
         """).fetchall()
         summaries = []
         for row in rows:
-            meta = project_meta_from_row(conn, row)
             summaries.append(
                 ProjectSummary(
-                    **meta.model_dump(),
+                    **_meta_with_runtime(request, conn, row).model_dump(),
                     last_activity_at=row["last_activity_at"],
                     fact_count=row["fact_count"],
                     intent_count=row["intent_count"],
@@ -100,8 +113,14 @@ def list_projects(request: Request):
 
 @router.post("/projects", response_model=ProjectDetail, status_code=201, dependencies=[Depends(require_user)])
 def create_project(request: Request, body: CreateProjectRequest):
+    registry: DispatcherRegistry = request.app.state.dispatcher_registry
     with get_conn(request) as conn:
         pid = next_project_id(conn)
+        record = registry.ensure_assignment(pid)
+        if record is None:
+            raise HTTPException(
+                503, "No dispatcher is online; start a dispatcher before creating a project"
+            )
         now = utcnow()
 
         conn.execute(
@@ -136,6 +155,7 @@ def create_project(request: Request, body: CreateProjectRequest):
                 bootstrap_enabled=body.bootstrap_enabled,
                 created_at=now,
                 reason=None,
+                dispatcher=dispatcher_info(record),
             ),
             facts=[
                 Fact(id="origin", description=body.origin, created_at=now, creator=None),
@@ -167,7 +187,7 @@ def get_project(request: Request, project_id: str):
         ).fetchall()
 
         return ProjectDetail(
-            project=project_meta_from_row(conn, row),
+            project=_meta_with_runtime(request, conn, row),
             facts=[Fact(**dict(f)) for f in facts],
             intents=build_intents(conn, project_id),
             hints=[Hint(**dict(h)) for h in hints],
@@ -179,6 +199,7 @@ def delete_project(request: Request, project_id: str):
     with get_conn(request) as conn:
         get_project_or_404(conn, project_id)
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    request.app.state.dispatcher_registry.remove_project(project_id)
 
 
 @router.put("/projects/{project_id}/title", response_model=ProjectMeta, dependencies=[Depends(require_user)])
@@ -190,7 +211,7 @@ def update_project_title(request: Request, project_id: str, body: UpdateProjectT
             (body.title, project_id),
         )
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(conn, updated)
+        return _meta_with_runtime(request, conn, updated)
 
 
 @router.put("/projects/{project_id}/status", response_model=ProjectMeta, dependencies=[Depends(require_user)])
@@ -202,7 +223,7 @@ def update_project_status(request: Request, project_id: str, body: UpdateProject
         if current_status == "completed":
             raise HTTPException(409, "Completed projects cannot change status")
         if current_status == body.status:
-            return project_meta_from_row(conn, row)
+            return _meta_with_runtime(request, conn, row)
 
         conn.execute(
             "UPDATE projects SET status = ? WHERE id = ?",
@@ -215,7 +236,7 @@ def update_project_status(request: Request, project_id: str, body: UpdateProject
             )
             clear_project_reason(conn, project_id)
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(conn, updated)
+        return _meta_with_runtime(request, conn, updated)
 
 
 @router.post("/projects/{project_id}/reason/claim", response_model=ProjectMeta)
@@ -228,7 +249,7 @@ def claim_project_reason(request: Request, project_id: str, body: ReasonClaimReq
         if current_worker is not None and current_worker != body.worker:
             raise HTTPException(409, f"Project reason is currently claimed by {current_worker}")
         if current_worker == body.worker:
-            return project_meta_from_row(conn, row)
+            return _meta_with_runtime(request, conn, row)
 
         now = utcnow()
         conn.execute(
@@ -243,7 +264,7 @@ def claim_project_reason(request: Request, project_id: str, body: ReasonClaimReq
             (body.worker, body.trigger, now, now, project_id),
         )
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(conn, updated)
+        return _meta_with_runtime(request, conn, updated)
 
 
 @router.post("/projects/{project_id}/reason/heartbeat", response_model=ProjectMeta)
@@ -264,7 +285,7 @@ def heartbeat_project_reason(request: Request, project_id: str, body: HeartbeatR
             (now, project_id),
         )
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(conn, updated)
+        return _meta_with_runtime(request, conn, updated)
 
 
 @router.post("/projects/{project_id}/reason/release", response_model=ProjectMeta)
@@ -275,13 +296,13 @@ def release_project_reason(request: Request, project_id: str, body: HeartbeatReq
         row = get_project_or_404(conn, project_id)
         current_worker = row["reason_worker"]
         if current_worker is None:
-            return project_meta_from_row(conn, row)
+            return _meta_with_runtime(request, conn, row)
         if current_worker != body.worker:
             raise HTTPException(409, f"Project reason is currently claimed by {current_worker}")
 
         clear_project_reason(conn, project_id)
         updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-        return project_meta_from_row(conn, updated)
+        return _meta_with_runtime(request, conn, updated)
 
 
 @router.post("/projects/{project_id}/complete", response_model=CompleteResponse)
@@ -326,7 +347,7 @@ def complete_project(request: Request, project_id: str, body: CompleteRequest):
         assert updated_project is not None
         assert updated_intent is not None
         return CompleteResponse(
-            project=project_meta_from_row(conn, updated_project),
+            project=_meta_with_runtime(request, conn, updated_project),
             fact=Fact(id=fid, description=body.description, created_at=now, creator=body.worker),
             intent=intent_to_model(conn, updated_intent, project_id),
         )
@@ -347,6 +368,6 @@ def create_goal(request: Request, project_id: str, body: CreateGoalRequest):
         updated_project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
         assert updated_project is not None
         return GoalResponse(
-            project=project_meta_from_row(conn, updated_project),
+            project=_meta_with_runtime(request, conn, updated_project),
             fact=Fact(id=gid, description=body.description, created_at=now, creator=body.creator),
         )

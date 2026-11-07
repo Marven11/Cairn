@@ -7,7 +7,11 @@ from click.testing import CliRunner
 
 from cairn.cli import main
 from cairn.server import db
-from cairn.server.migrate import migrate_database, migrate_intent_weight
+from cairn.server.migrate import (
+    migrate_database,
+    migrate_intent_weight,
+    migrate_settings_heartbeat,
+)
 
 LEGACY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -198,10 +202,10 @@ def test_migrated_database_accepts_new_writes(tmp_path) -> None:
     """Id counters are rebuilt from migrated rows, so creating a new project,
     intent or goal after the migration must not collide with migrated ids.
     """
+    from conftest import TEST_AUTH, basic_headers, dispatcher_login
     from fastapi.testclient import TestClient
 
     from cairn.server.app import create_app
-    from conftest import TEST_AUTH, basic_headers
 
     source = tmp_path / "legacy.db"
     target = tmp_path / "cairn.db"
@@ -213,6 +217,7 @@ def test_migrated_database_accepts_new_writes(tmp_path) -> None:
         create_app(tmp_path, auth=TEST_AUTH),
         headers=basic_headers(TEST_AUTH.username, TEST_AUTH.password),
     ) as client:
+        dispatcher_login(client)
         response = client.post(
             "/projects",
             json={"title": "after", "origin": "o", "goal": "g"},
@@ -330,6 +335,11 @@ CREATE TABLE scoped_counters (
     value INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (project_id, kind)
 );
+CREATE TABLE IF NOT EXISTS settings (
+    intent_timeout INTEGER NOT NULL DEFAULT 15,
+    reason_timeout INTEGER NOT NULL DEFAULT 15
+);
+INSERT OR IGNORE INTO settings (rowid, intent_timeout, reason_timeout) VALUES (1, 15, 15);
 """
 
 
@@ -397,10 +407,15 @@ def test_migrate_intent_weight_adds_column_and_keeps_data(tmp_path) -> None:
     finally:
         conn.close()
 
-    db.configure(target)
-    with db.connect(target) as conn:
+    final = tmp_path / "final.db"
+    followup = migrate_settings_heartbeat(target, final)
+    assert followup.settings == 1
+    db.configure(final)
+    with db.connect(final) as conn:
         row = conn.execute("SELECT weight FROM intents WHERE id = 'i001'").fetchone()
         assert row["weight"] == 0
+        row = conn.execute("SELECT dispatcher_heartbeat_timeout FROM settings WHERE rowid = 1").fetchone()
+        assert row["dispatcher_heartbeat_timeout"] == 45
 
 
 def test_migrate_intent_weight_rejects_wrong_sources(tmp_path) -> None:
@@ -430,6 +445,48 @@ def test_migrate_intent_weight_rejects_same_and_existing_target(tmp_path) -> Non
         migrate_intent_weight(source, target)
 
 
+def _build_pre_heartbeat_database(path) -> None:
+    """The current schema minus the dispatcher heartbeat column."""
+    with sqlite3.connect(path) as conn:
+        conn.executescript(db.SCHEMA)
+        conn.execute("ALTER TABLE settings DROP COLUMN dispatcher_heartbeat_timeout")
+
+
+def test_migrate_settings_heartbeat_adds_column_and_defaults(tmp_path) -> None:
+    source = tmp_path / "head.db"
+    target = tmp_path / "cairn.db"
+    _build_pre_heartbeat_database(source)
+
+    report = migrate_settings_heartbeat(source, target)
+
+    assert report.settings == 1
+    db.configure(target)
+    with db.connect(target) as conn:
+        row = conn.execute(
+            "SELECT intent_timeout, reason_timeout, dispatcher_heartbeat_timeout FROM settings WHERE rowid = 1"
+        ).fetchone()
+        assert row["intent_timeout"] == 15
+        assert row["reason_timeout"] == 15
+        assert row["dispatcher_heartbeat_timeout"] == 45
+
+
+def test_migrate_settings_heartbeat_rejects_current_and_bad_targets(tmp_path) -> None:
+    current = tmp_path / "current.db"
+    with sqlite3.connect(current) as conn:
+        conn.executescript(db.SCHEMA)
+    with pytest.raises(ValueError, match="already has"):
+        migrate_settings_heartbeat(current, tmp_path / "out.db")
+
+    source = tmp_path / "head.db"
+    _build_pre_heartbeat_database(source)
+    with pytest.raises(ValueError):
+        migrate_settings_heartbeat(source, source)
+    existing = tmp_path / "out.db"
+    existing.write_text("existing", encoding="utf-8")
+    with pytest.raises(ValueError):
+        migrate_settings_heartbeat(source, existing)
+
+
 def test_migrate_db_cli_exposes_version_subcommands(tmp_path) -> None:
     runner = CliRunner()
     legacy = tmp_path / "legacy.db"
@@ -451,6 +508,17 @@ def test_migrate_db_cli_exposes_version_subcommands(tmp_path) -> None:
     with sqlite3.connect(tmp_path / "b.db") as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(intents)")}
         assert "weight" in columns
+
+    pre = tmp_path / "pre.db"
+    _build_pre_heartbeat_database(pre)
+    result = runner.invoke(
+        main,
+        ["migrate-db", "settings-heartbeat", "--db-path", str(pre), "--target", str(tmp_path / "c.db")],
+    )
+    assert result.exit_code == 0
+    with sqlite3.connect(tmp_path / "c.db") as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
+        assert "dispatcher_heartbeat_timeout" in columns
 
     result = runner.invoke(main, ["migrate-db", "intent-weight", "--db-path", str(head), "--target", str(tmp_path / "b.db")])
     assert result.exit_code != 0

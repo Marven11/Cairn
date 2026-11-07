@@ -9,7 +9,17 @@ from fastapi.staticfiles import StaticFiles
 from cairn import __version__
 from cairn.server import db
 from cairn.server.auth import AuthConfig, authenticate
-from cairn.server.routers import dispatchers, export, hints, intents, projects, settings
+from cairn.server.routers import (
+    dispatchers,
+    export,
+    hints,
+    intents,
+    projects,
+    runtime,
+    settings,
+)
+from cairn.server.runtime import DispatcherRegistry
+from cairn.server.tokens import generate_secret
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -36,10 +46,14 @@ def create_app(data_folder: Path = db.DEFAULT_DATA_FOLDER, *, auth: AuthConfig) 
     app.state.database_path = data_folder.expanduser().resolve() / "cairn.db"
     app.state.dispatcher_config_lock = RLock()
     app.state.auth_config = auth
+    app.state.dispatcher_registry = DispatcherRegistry()
+    app.state.dispatcher_jwt_secret = generate_secret()
 
-    # The six API routers require basic auth; /healthz, the docs endpoints
+    # The API routers require authentication; /healthz, the docs endpoints
     # (/docs, /redoc, /openapi.json), the web UI (/) and /static are added as
-    # plain routes without this dependency and stay anonymous.
+    # plain routes without this dependency and stay anonymous. The runtime
+    # router declares its own per-endpoint dependencies because login is
+    # authenticated with the dispatcher basic credentials instead.
     auth_dependencies = [Depends(authenticate)]
     app.include_router(settings.router, dependencies=auth_dependencies)
     app.include_router(dispatchers.router, dependencies=auth_dependencies)
@@ -47,6 +61,7 @@ def create_app(data_folder: Path = db.DEFAULT_DATA_FOLDER, *, auth: AuthConfig) 
     app.include_router(hints.router, dependencies=auth_dependencies)
     app.include_router(intents.router, dependencies=auth_dependencies)
     app.include_router(export.router, dependencies=auth_dependencies)
+    app.include_router(runtime.router)
 
     @app.get("/healthz", tags=["health"])
     def healthz():

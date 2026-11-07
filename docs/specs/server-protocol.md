@@ -101,13 +101,16 @@ Hint 代表外部补充的高纬输入，不属于探索执行本身。因此项
 ```
 id
 title           # 项目名称
-status          # "active" | "stopped" | "completed"
+status          # "active" | "halted" | "stopped" | "completed"
 bootstrap_enabled  # 是否允许消费者在初始态运行 bootstrap，默认 true
 created_at
 completed_at          # 最近一次进入 completed 的时间；由图推导（最后一个被覆盖的 goal 的完成边时刻），项目未全部完成时为 null
 completed_by_intent   # 推导出的完成 Intent；多个 goal 在同一时刻完成时取最后写入的一条（每个 goal 至多一条覆盖边）
 reason          # 当前项目级 reason lease，null 表示当前无人执行 reason
+dispatcher      # 当前被指派的 dispatcher 实例（见下文 Runtime Dispatcher），项目未指派时为 null；stopped/completed 项目保留该字段供其所有者清理容器
 ```
+
+`halted` 是读时派生的状态，数据库只保存 `active`、`stopped`、`completed`：`active` 项目被指派的 dispatcher 掉线（心跳超时）时返回为 `halted`，等该 dispatcher 恢复心跳或用户改派；dispatcher 进程重启会以新 id 登记，对应项目需要用户改派。`halted` 只影响读写端口的展示与调度选择，写操作的准入仍由数据库状态（`check_project_active` 等）决定，因此掉线期间 dispatcher 与用户仍可写入，恢复或改派后这些写入即时生效。
 
 ### Project.reason
 
@@ -173,6 +176,7 @@ created_at
 ```
 intent_timeout  # 单位秒，超过此时间无心跳则 worker 清空为 null
 reason_timeout  # 单位秒，超过此时间无心跳则 Project.reason 清空为 null
+dispatcher_heartbeat_timeout  # 单位秒，超过此时间无心跳则 dispatcher 实例被判定为 offline（见 Runtime Dispatcher）；变更只影响之后的登录
 ```
 
 ---
@@ -181,14 +185,47 @@ reason_timeout  # 单位秒，超过此时间无心跳则 Project.reason 清空�
 
 ### 认证
 
-除少数匿名端点外，所有接口均要求 HTTP Basic Auth。服务端通过启动参数或同名环境变量配置两套凭据：
+除少数匿名端点外，所有接口均要求认证。服务端通过启动参数或同名环境变量配置两套凭据：
 
-- 用户凭据：`--auth-username` / `CAIRN_AUTH_USERNAME`，`--auth-password` / `CAIRN_AUTH_PASSWORD`。用户名不能使用保留名 `dispatcher`，也不能包含 `:`（HTTP Basic 按第一个冒号切分，含冒号的用户名永远无法匹配，服务端启动时直接报错）；用户密码不能与 dispatcher api key 相同（否则同一字符串可认证两个角色）；三个凭据值均只能包含 ASCII 字符（非 ASCII 凭据会被 HTTP Basic 编解码拒绝，服务端启动时同样报错）。用户可调用全部接口。
-- Dispatcher 凭据：用户名固定为 `dispatcher`，密码为 `--dispatcher-api-key` / `CAIRN_DISPATCHER_API_KEY` 配置的 API key。Dispatcher 只能调用调度所需的接口（读取配置、项目图、设置、导出，以及驱动图生长的写操作；其中 `POST /complete` 在全部 goal 达成时会把项目标记为 `completed`，属于图生长的一部分），不能创建/删除项目、修改项目标题、手动启停项目（`PUT /status`）、注入 Hint、新增 goal、修改设置或管理 Dispatcher 配置，越权访问返回 `403`。
+- 用户凭据：`--auth-username` / `CAIRN_AUTH_USERNAME`，`--auth-password` / `CAIRN_AUTH_PASSWORD`，以 HTTP Basic 发送。用户名不能使用保留名 `dispatcher`，也不能包含 `:`（HTTP Basic 按第一个冒号切分，含冒号的用户名永远无法匹配，服务端启动时直接报错）；用户密码不能与 dispatcher api key 相同（否则同一字符串可认证两个角色）；三个凭据值均只能包含 ASCII 字符（非 ASCII 凭据会被 HTTP Basic 编解码拒绝，服务端启动时同样报错）。用户可调用全部接口。
+- Dispatcher 凭据：用户名固定为 `dispatcher`，密码为 `--dispatcher-api-key` / `CAIRN_DISPATCHER_API_KEY` 配置的 API key，**仅在登录时使用**：Dispatcher 进程启动后先调用 `POST /runtime/dispatchers/login` 换取一个 JWT（含 dispatcher 实例的 nanoid），之后所有请求以 `Authorization: Bearer <token>` 身份调用调度所需的接口（读取配置、项目图、设置、导出，以及驱动图生长的写操作；其中 `POST /complete` 在全部 goal 达成时会把项目标记为 `completed`，属于图生长的一部分），不能创建/删除项目、修改项目标题、手动启停项目（`PUT /status`）、注入 Hint、新增 goal、修改设置或管理 Dispatcher 配置，越权访问返回 `403`。Basic dispatcher 凭据用于其他接口返回 `401`。
 
-匿名端点：`GET /healthz`（容器健康检查）、`/openapi.json`、`/docs`、`/redoc`、Web 首页 `/` 与其静态资源。凭据错误或缺失返回 `401`，响应携带 `WWW-Authenticate: Basic realm="cairn"` 头；`Authorization` 头缺失或无法解析（非法 base64、载荷无冒号等）时 `detail` 为 `Not authenticated`，凭据与配置不匹配时 `detail` 为 `invalid credentials`。
+匿名端点：`GET /healthz`（容器健康检查）、`/openapi.json`、`/docs`、`/redoc`、Web 首页 `/` 与其静态资源。凭据错误或缺失返回 `401`，Basic 路径响应携带 `WWW-Authenticate: Basic realm="cairn"` 头；`Authorization` 头缺失或无法解析（非法 base64、载荷无冒号等）时 `detail` 为 `Not authenticated`，凭据与配置不匹配时 `detail` 为 `invalid credentials`。
 
-Dispatcher 启动拉取配置时遇到 `4xx` 会直接报错退出；运行中遇到 `4xx`（如凭据被轮换）会在下一个调度 tick 重试。
+Dispatcher 运行中收到 `401`（JWT 过期或被重签）时会取消本地任务、清空全部内存状态并重新登录；重新登录携带之前的 dispatcher id，服务端沿用同一身份，项目指派不丢失。登录被拒（API key 错误）则直接退出。
+
+#### Runtime Dispatcher（内存态）
+
+Dispatcher 实例与项目指派只存在于内存，不写入数据库；接口统一使用 `/runtime` 前缀。重启 server 会清空全部 dispatcher 实例与指派。重新登录并完成首次心跳的实例成为指派候选：项目在读取过程中若发现自己没有指派，会被分给当时最先上线的在线 dispatcher，因此项目从 `halted` 回到 `active`，用户也可手动改派（重启前的手动指派不保留）。
+
+#### POST /runtime/dispatchers/login
+
+以 Basic dispatcher 凭据登录（需 `name`：配置名；`hostname`；可选 `dispatcher_id`：要继续的既有会话 id）。
+
+响应：
+
+```json
+{
+  "dispatcher_id": "9o4opw__Tps8wBn84q75c",
+  "token": "<JWT>",
+  "heartbeat_interval": 15,
+  "heartbeat_timeout": 45
+}
+```
+
+`heartbeat_interval`/`heartbeat_timeout` 按登录时刻的 `dispatcher_heartbeat_timeout` 设置推导（每 timeout 三次心跳），登录后被冻结，设置变更只影响之后的登录。携带 `dispatcher_id` 且 name/hostname 都与既有会话匹配的登录沿用该 id（项目指派保留），未携带或不匹配则视为全新实例；同一 (name, hostname) 上启动的第二个存活进程因此不会蹬掉既有身份。
+
+#### POST /runtime/dispatchers/heartbeat
+
+Bearer dispatcher token；刷新自身在线状态。`dispatcher_heartbeat_timeout` 过期未心跳即被判定 offline，其指派的项目显示为 `halted`。
+
+#### GET /runtime/dispatchers
+
+返回全部 dispatcher 实例（含 offline 记录），包含 `id`、`name`、`hostname`、`online`、`connected_at`、`last_heartbeat_at`、`project_count`。仅用户可读。
+
+#### PUT /runtime/projects/{project_id}/dispatcher
+
+用户把项目改派给指定 dispatcher（`{"dispatcher_id": ...}`）。切派不迁移容器与文件：原 dispatcher 的容器与工作目录对新 dispatcher 不可见，响应包含项目 id 与 dispatcher 信息。
 
 #### GET /healthz
 
@@ -207,7 +244,8 @@ Dispatcher 启动拉取配置时遇到 `4xx` 会直接报错退出；运行中�
 ```json
 {
   "intent_timeout": 5,
-  "reason_timeout": 5
+  "reason_timeout": 5,
+  "dispatcher_heartbeat_timeout": 45
 }
 ```
 
@@ -215,14 +253,15 @@ Dispatcher 启动拉取配置时遇到 `4xx` 会直接报错退出；运行中�
 
 #### PUT /settings
 
-更新全局配置。
+更新全局配置。缺失的字段保留原值（不会回退到默认值）。
 
 Body：
 
 ```json
 {
   "intent_timeout": 5,
-  "reason_timeout": 5
+  "reason_timeout": 5,
+  "dispatcher_heartbeat_timeout": 45
 }
 ```
 
@@ -292,6 +331,12 @@ Body：
       "started_at": "2026-03-21T10:06:00Z",
       "last_heartbeat_at": "2026-03-21T10:06:03Z"
     },
+    "dispatcher": {
+      "id": "9o4opw__Tps8wBn84q75c",
+      "name": "main",
+      "hostname": "box-a",
+      "online": true
+    },
     "last_activity_at": "2026-03-21T10:03:00Z",
     "fact_count": 8,
     "intent_count": 5,
@@ -308,7 +353,7 @@ Body：
 
 #### POST /projects
 
-创建新项目。`origin` 写入 `facts`；`goal` 写入为首个 goal Fact（id `g001`）。`hints` 可选。`bootstrap_enabled` 可选，默认为 `true`；为 `false` 时消费者跳过 bootstrap。即使为 `true`，消费者没有 bootstrap 能力时也可直接进入 reason。
+创建新项目。`origin` 写入 `facts`；`goal` 写入为首个 goal Fact（id `g001`）。新项目立即指派给最先上线的在线 dispatcher；没有在线 dispatcher 时返回 `503`。`hints` 可选。`bootstrap_enabled` 可选，默认为 `true`；为 `false` 时消费者跳过 bootstrap。即使为 `true`，消费者没有 bootstrap 能力时也可直接进入 reason。
 
 Body：
 

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from cairn.dispatcher.config import ContainerConfig
-from cairn.dispatcher.protocol.client import ApiResult
+from cairn.dispatcher.protocol.client import ApiResult, AuthError
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.heartbeat import HeartbeatLease
+from cairn.dispatcher.tasks.common import project_allows_conclude_fallback
 
 
 @dataclass
@@ -68,6 +70,30 @@ def test_heartbeat_conflict_failure_kills_attached_process() -> None:
 
     assert lease.failure is not None
     assert lease.failure.status_code == 409
+    assert process.kill_count == 1
+
+
+def test_conclude_fallback_accepts_halted_projects() -> None:
+    expectations = {"active": True, "halted": True, "stopped": False, "completed": False}
+    for status, expected in expectations.items():
+        client = SimpleNamespace(
+            get_project=lambda _project_id, s=status: SimpleNamespace(project=SimpleNamespace(status=s))
+        )
+        assert project_allows_conclude_fallback(client, "proj_001", worker_name="w", intent_id="i001") is expected
+
+
+def test_heartbeat_auth_error_marks_failure_and_kills_attached_process() -> None:
+    process = FakeProcess()
+
+    def relogin_request() -> ApiResult:
+        raise AuthError("dispatcher token rejected path=/projects/p/intents/i/heartbeat")
+
+    lease = HeartbeatLease(relogin_request, "intent", "worker", interval=0)
+    lease.attach_process(process)
+    lease._run()
+
+    assert lease.failure is not None
+    assert lease.failure.status_code == 401
     assert process.kill_count == 1
 
 

@@ -5,7 +5,13 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from cairn.dispatcher.config import validate_dispatcher_name
+from cairn.server.tokens import DISPATCHER_ID_PATTERN
+
 GOAL_ID_PATTERN = re.compile(r"^g\d+$")
+
+_HOSTNAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+_DISPATCHER_ID_RE = re.compile(DISPATCHER_ID_PATTERN)
 
 
 def is_goal_id(fact_id: str) -> bool:
@@ -15,6 +21,13 @@ def is_goal_id(fact_id: str) -> bool:
 class Settings(BaseModel):
     intent_timeout: int = Field(ge=5)
     reason_timeout: int = Field(ge=5)
+    dispatcher_heartbeat_timeout: int = Field(ge=5)
+
+
+class UpdateSettingsRequest(BaseModel):
+    intent_timeout: int | None = Field(default=None, ge=5)
+    reason_timeout: int | None = Field(default=None, ge=5)
+    dispatcher_heartbeat_timeout: int | None = Field(default=None, ge=5)
 
 
 class Fact(BaseModel):
@@ -53,15 +66,29 @@ class ProjectReason(BaseModel):
     last_heartbeat_at: str
 
 
+class DispatcherInfo(BaseModel):
+    id: str
+    name: str
+    hostname: str
+    online: bool
+
+
+class DispatcherSummary(DispatcherInfo):
+    connected_at: str
+    last_heartbeat_at: str | None = None
+    project_count: int
+
+
 class ProjectMeta(BaseModel):
     id: str
     title: str
-    status: Literal["active", "stopped", "completed"]
+    status: Literal["active", "stopped", "completed", "halted"]
     bootstrap_enabled: bool
     created_at: str
     completed_at: str | None = None
     completed_by_intent: str | None = None
     reason: ProjectReason | None = None
+    dispatcher: DispatcherInfo | None = None
 
 
 class ProjectSummary(ProjectMeta):
@@ -269,6 +296,63 @@ class ConcludeResponse(BaseModel):
 
 class UpdateProjectStatusRequest(BaseModel):
     status: Literal["active", "stopped"]
+
+
+class DispatcherLoginRequest(BaseModel):
+    name: str
+    hostname: str
+    dispatcher_id: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_dispatcher_config_name(cls, value: str) -> str:
+        text = value.strip()
+        validate_dispatcher_name(text)
+        return text
+
+    @field_validator("hostname")
+    @classmethod
+    def validate_hostname(cls, value: str) -> str:
+        text = value.strip()
+        if not _HOSTNAME_RE.fullmatch(text) or len(text) > 253:
+            raise ValueError(
+                "must be up to 253 letters, digits, dots, hyphens or underscores"
+            )
+        return text
+
+    @field_validator("dispatcher_id")
+    @classmethod
+    def validate_dispatcher_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        if not _DISPATCHER_ID_RE.fullmatch(text):
+            raise ValueError("must be a 21-character dispatcher id")
+        return text
+
+
+class DispatcherLoginResponse(BaseModel):
+    dispatcher_id: str
+    token: str
+    heartbeat_interval: int
+    heartbeat_timeout: int
+
+
+class UpdateProjectDispatcherRequest(BaseModel):
+    dispatcher_id: str
+
+    @field_validator("dispatcher_id")
+    @classmethod
+    def validate_dispatcher_id(cls, value: str) -> str:
+        text = value.strip()
+        if not _DISPATCHER_ID_RE.fullmatch(text):
+            raise ValueError("must be a 21-character dispatcher id")
+        return text
+
+
+class ProjectDispatcherResponse(BaseModel):
+    project_id: str
+    dispatcher: DispatcherInfo
 
 
 class UpdateProjectTitleRequest(BaseModel):

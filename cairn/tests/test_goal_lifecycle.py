@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from cairn.server.app import create_app
-from conftest import TEST_AUTH, basic_headers
+from conftest import TEST_AUTH, basic_headers, dispatcher_login
 
 
 @pytest.fixture
@@ -13,6 +13,7 @@ def client(tmp_path) -> TestClient:
         create_app(tmp_path, auth=TEST_AUTH),
         headers=basic_headers(TEST_AUTH.username, TEST_AUTH.password),
     ) as test_client:
+        dispatcher_login(test_client)
         yield test_client
 
 

@@ -26,6 +26,7 @@ function cairnApp() {
     showRenameModal: false,
     showLocalPrefs: false,
     showSettings: false,
+    showDispatchers: false,
     showYamlModal: false,
     exportTab: 'yaml',
     exportProjectId: '',
@@ -39,8 +40,10 @@ function cairnApp() {
     addGoalForm: { projectId: '', projectTitle: '', description: '', reopens: false },
     renameForm: { projectId: '', originalTitle: '', title: '' },
     localPrefs: { actor_name: 'Human', layout_mode: 'dagre_tb' },
-    settingsForm: { intent_timeout: 5, reason_timeout: 5 },
+    settingsForm: { intent_timeout: 5, reason_timeout: 5, dispatcher_heartbeat_timeout: 45 },
     settingsTab: 'server',
+    runtimeDispatchers: null,
+    dispatchersBusy: false,
     dispatcherEntries: null,
     dispatcherSelectedName: null,
     dispatcherName: '',
@@ -206,8 +209,23 @@ function cairnApp() {
         active: 'bg-teal-50 text-teal-600',
         stopped: 'bg-amber-50 text-amber-700',
         completed: 'bg-slate-100 text-slate-500',
+        halted: 'bg-rose-50 text-rose-600',
       };
       return classes[status] || 'bg-slate-100 text-slate-500';
+    },
+
+    isStoppableStatus(status) {
+      return status === 'active' || status === 'halted';
+    },
+
+    dispatcherOptions(current) {
+      const options = this.runtimeDispatchers ?? [];
+      if (!options.some(d => d.id === current.id)) return [current, ...options];
+      return options;
+    },
+
+    dispatcherOptionLabel(d) {
+      return `${d.name} · ${d.hostname}${d.online ? '' : ' (offline)'}`;
     },
 
     reasonBadgeText(reason, compact = false) {
@@ -297,24 +315,24 @@ function cairnApp() {
       return { width: 22, height: 22 };
     },
 
-    projectIsActive() {
-      return !this.replay.active && this.project?.project?.status === 'active';
+    projectAcceptsGraphWrites() {
+      return !this.replay.active && ['active', 'halted'].includes(this.project?.project?.status);
     },
 
     countProjectsByStatus(status) {
       return this.projects.filter(project => project.status === status).length;
     },
 
-    hasActiveProjects() {
-      return this.projects.some(project => project.status === 'active');
+    hasStoppableProjects() {
+      return this.projects.some(project => this.isStoppableStatus(project.status));
     },
 
     projectCanWriteHints() {
-      return !this.replay.active && ['active', 'stopped', 'completed'].includes(this.project?.project?.status);
+      return !this.replay.active && ['active', 'halted', 'stopped', 'completed'].includes(this.project?.project?.status);
     },
 
     canActOnSelectedFacts() {
-      return this.projectIsActive() && this.selectedFacts.length > 0;
+      return this.projectAcceptsGraphWrites() && this.selectedFacts.length > 0;
     },
 
     async loadProjects() {
@@ -699,7 +717,42 @@ function cairnApp() {
         const s = await this.api('GET', '/settings');
         this.settingsForm.intent_timeout = s.intent_timeout;
         this.settingsForm.reason_timeout = s.reason_timeout;
+        this.settingsForm.dispatcher_heartbeat_timeout = s.dispatcher_heartbeat_timeout;
       } catch(e) { console.error(e); }
+    },
+
+    async openDispatchers() {
+      this.showDispatchers = true;
+      await this.loadRuntimeDispatchers();
+    },
+
+    closeDispatchers() {
+      this.showDispatchers = false;
+    },
+
+    async loadRuntimeDispatchers() {
+      this.dispatchersBusy = true;
+      try {
+        this.runtimeDispatchers = await this.api('GET', '/runtime/dispatchers');
+      } catch (e) {
+        this.showToast(e.message, 'error');
+        this.runtimeDispatchers = null;
+      } finally {
+        this.dispatchersBusy = false;
+      }
+    },
+
+    async changeProjectDispatcher(projectId, dispatcherId) {
+      try {
+        const result = await this.api('PUT', `/runtime/projects/${encodeURIComponent(projectId)}/dispatcher`, { dispatcher_id: dispatcherId });
+        this.showToast(`Switched to dispatcher ${result.dispatcher.name}`);
+        await this.loadProjects();
+        if (this.selectedProjectId === projectId && this.view === 'graph') {
+          await this.loadProject(projectId);
+        }
+      } catch (e) {
+        this.showToast(e.message, 'error');
+      }
     },
 
     async loadProject(id) {
@@ -708,7 +761,7 @@ function cairnApp() {
 
     async toggleProjectStop() {
       if (!this.selectedProjectId || !this.project || this.project.project.status === 'completed') return;
-      const nextStatus = this.project.project.status === 'active' ? 'stopped' : 'active';
+      const nextStatus = this.isStoppableStatus(this.project.project.status) ? 'stopped' : 'active';
       try {
         await this.setProjectStatus(this.selectedProjectId, nextStatus);
       } catch (e) {
@@ -718,7 +771,7 @@ function cairnApp() {
 
     async toggleProjectStopById(projectId, currentStatus) {
       if (!projectId || currentStatus === 'completed') return;
-      const nextStatus = currentStatus === 'active' ? 'stopped' : 'active';
+      const nextStatus = this.isStoppableStatus(currentStatus) ? 'stopped' : 'active';
       try {
         await this.setProjectStatus(projectId, nextStatus);
       } catch (e) {
@@ -737,7 +790,7 @@ function cairnApp() {
       if (this.selectedProjectId === projectId && this.project) {
         this.project.project.status = updated.status;
         this.project.project.reason = updated.reason;
-        if (!this.projectIsActive()) {
+        if (!this.projectAcceptsGraphWrites()) {
           this.showIntentModal = false;
           this.showConcludeModal = false;
           this.showCompleteModal = false;
@@ -751,13 +804,13 @@ function cairnApp() {
       return updated;
     },
 
-    async stopAllActiveProjects() {
-      const activeProjects = this.projects.filter(project => project.status === 'active');
-      if (activeProjects.length === 0 || this.isStoppingAllProjects) return;
+    async stopAllStoppableProjects() {
+      const stoppableProjects = this.projects.filter(project => this.isStoppableStatus(project.status));
+      if (stoppableProjects.length === 0 || this.isStoppingAllProjects) return;
       this.isStoppingAllProjects = true;
       try {
         const results = await Promise.allSettled(
-          activeProjects.map(project => this.setProjectStatus(project.id, 'stopped', { reload: false, toast: false }))
+          stoppableProjects.map(project => this.setProjectStatus(project.id, 'stopped', { reload: false, toast: false }))
         );
         await this.loadProjects();
         const successCount = results.filter(result => result.status === 'fulfilled').length;
@@ -1223,6 +1276,9 @@ function cairnApp() {
       this.selectedNode = null;
       this.selectedFacts = [];
       this.selectedTimelineEntryId = null;
+      if (this.runtimeDispatchers === null) {
+        this.loadRuntimeDispatchers();
+      }
       await this.loadProject(id);
       this.view = 'graph';
       if (location.hash !== `#/projects/${id}`) location.hash = `/projects/${id}`;
@@ -1273,6 +1329,7 @@ function cairnApp() {
         } else {
           await this.loadProjects();
         }
+        if (!this.dispatchersBusy) await this.loadRuntimeDispatchers();
       }, 5000);
     },
 
@@ -1996,7 +2053,7 @@ function cairnApp() {
 
     selectedOpenIntentRecord() {
       const intent = this.selectedIntentRecord();
-      if (!intent || !this.isOpenIntent(intent) || !this.projectIsActive()) return null;
+      if (!intent || !this.isOpenIntent(intent) || !this.projectAcceptsGraphWrites()) return null;
       return intent;
     },
 

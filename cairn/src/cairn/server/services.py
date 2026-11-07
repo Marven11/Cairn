@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 
@@ -16,8 +16,12 @@ class ProjectCompletion:
     completed_by_intent: str
 
 
+def format_timestamp(moment: float) -> str:
+    return datetime.fromtimestamp(moment, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 def utcnow() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def next_project_id(conn: sqlite3.Connection) -> str:
@@ -296,6 +300,11 @@ def get_intent_timeout(conn: sqlite3.Connection) -> int:
 def get_reason_timeout(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT reason_timeout FROM settings WHERE rowid = 1").fetchone()
     return row["reason_timeout"]
+
+
+def get_dispatcher_heartbeat_timeout(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT dispatcher_heartbeat_timeout FROM settings WHERE rowid = 1").fetchone()
+    return row["dispatcher_heartbeat_timeout"]
 
 
 def project_reason_from_row(row: sqlite3.Row) -> ProjectReason | None:

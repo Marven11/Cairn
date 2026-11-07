@@ -11,7 +11,8 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from cairn.dispatcher.config import DispatchConfig, validate_dispatcher_name, validate_prompt_resources
-from cairn.server.models import ProjectDetail, ProjectSummary, Settings
+from cairn.server.auth import DISPATCHER_USERNAME
+from cairn.server.models import DispatcherLoginResponse, ProjectDetail, ProjectSummary, Settings
 
 LOG = logging.getLogger(__name__)
 
@@ -21,6 +22,57 @@ class ProtocolError(RuntimeError):
         super().__init__(message)
         self.status_code = status_code
         self.response_text = response_text
+
+
+class AuthError(ProtocolError):
+    """The server rejected the dispatcher token (HTTP 401).
+
+    Callers cancel all running work, drop every in-memory state and log in
+    again to obtain a fresh token.
+    """
+
+    def __init__(self, message: str, response_text: str = ""):
+        super().__init__(message, 401, response_text)
+
+
+def raise_if_unauthorized(response: requests.Response, path: str) -> None:
+    if response.status_code == 401:
+        raise AuthError(f"dispatcher token rejected path={path}", response.text)
+
+
+def login_dispatcher(
+    base_url: str,
+    name: str,
+    hostname: str,
+    *,
+    api_key: str,
+    timeout: float = 10.0,
+    prior_dispatcher_id: str | None = None,
+) -> DispatcherLoginResponse:
+    """Exchange the dispatcher api key for a JWT via the runtime endpoint.
+
+    ``prior_dispatcher_id`` continues a previous login of this process so its
+    server-side identity (and project assignments) survives the re-login.
+    """
+    validate_dispatcher_name(name)
+    response = requests.post(
+        f"{base_url.rstrip('/')}/runtime/dispatchers/login",
+        json={"name": name, "hostname": hostname, "dispatcher_id": prior_dispatcher_id},
+        auth=(DISPATCHER_USERNAME, api_key),
+        timeout=timeout,
+    )
+    if response.status_code == 401:
+        raise AuthError("dispatcher login rejected: invalid credentials", response.text)
+    if response.status_code == 422:
+        detail = response.json()["detail"]
+        if isinstance(detail, list):
+            detail = "; ".join(
+                f"{'.'.join(map(str, error['loc'])) if error['loc'] else 'body'}: {error['msg']}"
+                for error in detail
+            )
+        raise ProtocolError(f"dispatcher login rejected (HTTP 422): {detail}", 422, response.text)
+    response.raise_for_status()
+    return DispatcherLoginResponse.model_validate(response.json())
 
 
 @dataclass(slots=True)
@@ -46,11 +98,11 @@ class CairnClient:
         base_url: str,
         timeout: float = 10.0,
         *,
-        auth: tuple[str, str],
+        token: str,
     ):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._auth = auth
+        self._token = token
         self._summary_adapter = TypeAdapter(list[ProjectSummary])
         self._local = threading.local()
         self._sessions: dict[int, requests.Session] = {}
@@ -83,6 +135,7 @@ class CairnClient:
             if entry is None:
                 raise ProtocolError(f"unexpected 304 without cached etag path={path}", 304)
             return entry.data
+        raise_if_unauthorized(response, path)
         if response.status_code >= 400:
             with self._etag_cache_lock:
                 cache.pop(path, None)
@@ -97,6 +150,7 @@ class CairnClient:
     def get_dispatch_config(self, name: str) -> DispatchConfig:
         validate_dispatcher_name(name)
         response = self._session().get(self._url(f"/dispatchers/{name}"), timeout=self._timeout)
+        raise_if_unauthorized(response, f"/dispatchers/{name}")
         if response.status_code in (400, 404, 422):
             detail = response.json()["detail"]
             if isinstance(detail, list):
@@ -112,6 +166,7 @@ class CairnClient:
 
     def get_settings(self) -> Settings:
         response = self._session().get(self._url("/settings"), timeout=self._timeout)
+        raise_if_unauthorized(response, "/settings")
         response.raise_for_status()
         return Settings.model_validate(response.json())
 
@@ -121,8 +176,12 @@ class CairnClient:
             params={"format": "yaml"},
             timeout=self._timeout,
         )
+        raise_if_unauthorized(response, f"/projects/{project_id}/export")
         response.raise_for_status()
         return response.text
+
+    def dispatcher_heartbeat(self) -> ApiResult:
+        return self._request_json("POST", "/runtime/dispatchers/heartbeat", json={})
 
     def heartbeat(self, project_id: str, intent_id: str, worker: str) -> ApiResult:
         return self._request_json(
@@ -205,6 +264,7 @@ class CairnClient:
         except requests.RequestException as exc:
             LOG.warning("request failed method=%s path=%s error=%s", method, path, exc)
             return ApiResult(status_code=0, text=str(exc))
+        raise_if_unauthorized(response, path)
         data: Any | None = None
         if response.headers.get("content-type", "").startswith("application/json"):
             data = response.json()
@@ -219,7 +279,7 @@ class CairnClient:
             return session
 
         session = requests.Session()
-        session.auth = self._auth
+        session.headers["Authorization"] = f"Bearer {self._token}"
         adapter = HTTPAdapter(pool_connections=64, pool_maxsize=64, pool_block=False)
         session.mount("http://", adapter)
         session.mount("https://", adapter)

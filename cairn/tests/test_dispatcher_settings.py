@@ -14,9 +14,10 @@ from cairn.cli import main
 from cairn.dispatcher.protocol.client import CairnClient
 from cairn.dispatcher.scheduler.loop import DispatcherLoop
 from cairn.server import db
+from cairn.server.models import DispatcherLoginResponse
 from cairn.server.app import create_app
 
-from conftest import TEST_AUTH, basic_headers, make_config
+from conftest import TEST_AUTH, basic_headers, dispatcher_login, make_config
 
 
 @pytest.fixture
@@ -25,6 +26,7 @@ def client(tmp_path):
         create_app(tmp_path, auth=TEST_AUTH),
         headers=basic_headers(TEST_AUTH.username, TEST_AUTH.password),
     ) as http:
+        dispatcher_login(http)
         yield http
 
 
@@ -40,15 +42,26 @@ def test_first_start_initializes_missing_folder_and_reuses_persisted_data(tmp_pa
     with TestClient(create_app(data_folder, auth=TEST_AUTH), headers=user_auth) as first:
         assert first.get("/projects").json() == []
         assert first.get("/dispatchers").json() == []
+        dispatcher_login(first)
         project = first.post("/projects", json={"title": "persisted", "origin": "start", "goal": "finish"})
         assert project.status_code == 201
         project_id = project.json()["project"]["id"]
         assert first.post("/dispatchers/main", json={"yaml": source}).status_code == 201
-        assert first.put("/settings", json={"intent_timeout": 30, "reason_timeout": 45}).status_code == 200
+        assert (
+            first.put(
+                "/settings",
+                json={"intent_timeout": 30, "reason_timeout": 45, "dispatcher_heartbeat_timeout": 60},
+            ).status_code
+            == 200
+        )
     with TestClient(create_app(data_folder, auth=TEST_AUTH), headers=user_auth) as second:
         assert second.get(f"/projects/{project_id}").json()["project"]["title"] == "persisted"
         assert second.get("/dispatchers/main/yaml").json() == {"yaml": source}
-        assert second.get("/settings").json() == {"intent_timeout": 30, "reason_timeout": 45}
+        assert second.get("/settings").json() == {
+            "intent_timeout": 30,
+            "reason_timeout": 45,
+            "dispatcher_heartbeat_timeout": 60,
+        }
 
 
 def test_dispatcher_crud_preserves_yaml_and_serves_model_dump(client, tmp_path, source):
@@ -191,7 +204,7 @@ def test_dispatcher_fetches_config_then_validates_local_prompt_resources(client)
     payload["runtime"]["prompt_group"] = "not-installed-here"
     assert client.post("/dispatchers/main", json={"yaml": yaml.safe_dump(payload)}).status_code == 201
     assert client.get("/dispatchers/main").status_code == 200
-    api = CairnClient("http://testserver/", auth=("dispatcher", TEST_AUTH.dispatcher_api_key))
+    api = CairnClient("http://testserver/", token="unused")
     api._session = lambda: client
     with pytest.raises(ValueError, match="missing prompt group"):
         api.get_dispatch_config("main")
@@ -202,6 +215,10 @@ def test_dispatcher_loop_starts_with_remote_json_and_local_backend(client, monke
     payload["runtime"].update(execution="local", interval=1, prompt_group="mock")
     assert client.post("/dispatchers/main", json={"yaml": yaml.safe_dump(payload)}).status_code == 201
     monkeypatch.setattr(CairnClient, "_session", lambda _self: client)
+    monkeypatch.setattr(
+        "cairn.dispatcher.scheduler.loop.login_dispatcher",
+        lambda *_args, **_kwargs: DispatcherLoginResponse.model_validate(dispatcher_login(client)),
+    )
     loop = DispatcherLoop("http://testserver/", "main", api_key=TEST_AUTH.dispatcher_api_key)
     assert loop.config.runtime.execution == "local"
     loop.run(once=True)
@@ -243,8 +260,8 @@ def test_dispatch_cli_passes_server_and_name_and_reports_fetch_failures(monkeypa
     observed = []
 
     class Loop:
-        def __init__(self, server_url, name, *, api_key=None):
-            observed.append((server_url, name, api_key))
+        def __init__(self, server_url, name, *, api_key=None, hostname=None, **kwargs):
+            observed.append((server_url, name, api_key, hostname))
 
         def run(self, *, once):
             observed.append(once)
@@ -252,10 +269,10 @@ def test_dispatch_cli_passes_server_and_name_and_reports_fetch_failures(monkeypa
     monkeypatch.setattr("cairn.cli.DispatcherLoop", Loop)
     result = CliRunner().invoke(
         main,
-        ["dispatch", "--server-url", "http://server:9000", "--name", "Main_1", "--api-key", "dispatch-key", "--once"],
+        ["dispatch", "--server-url", "http://server:9000", "--name", "Main_1", "--api-key", "dispatch-key", "--hostname", "box", "--once"],
     )
     assert result.exit_code == 0
-    assert observed == [("http://server:9000", "Main_1", "dispatch-key"), True]
+    assert observed == [("http://server:9000", "Main_1", "dispatch-key", "box"), True]
     result = CliRunner().invoke(main, ["dispatch", "--name", "../bad", "--api-key", "dispatch-key"])
     assert result.exit_code == 2
 
@@ -274,6 +291,7 @@ def test_single_storage_path_drives_startup_database_and_dispatcher_files(tmp_pa
     app = create_app(unused, auth=TEST_AUTH)
     app.state.database_path = actual / "cairn.db"
     with TestClient(app, headers=basic_headers(TEST_AUTH.username, TEST_AUTH.password)) as client:
+        dispatcher_login(client)
         response = client.post("/projects", json={"title": "actual", "origin": "start", "goal": "finish"})
         assert response.status_code == 201
         assert client.post("/dispatchers/main", json={"yaml": source}).status_code == 201
@@ -288,15 +306,31 @@ def test_multiple_apps_isolate_database_and_yaml_in_their_data_folders(tmp_path,
     user_auth = basic_headers(TEST_AUTH.username, TEST_AUTH.password)
     with TestClient(create_app(tmp_path / "first", auth=TEST_AUTH), headers=user_auth) as first:
         with TestClient(create_app(tmp_path / "second", auth=TEST_AUTH), headers=user_auth) as second:
+            dispatcher_login(first)
+            dispatcher_login(second)
             assert first.post("/projects", json={"title": "first", "origin": "start", "goal": "finish"}).status_code == 201
             assert second.post("/projects", json={"title": "second", "origin": "start", "goal": "finish"}).status_code == 201
             assert [p["title"] for p in first.get("/projects").json()] == ["first"]
             assert [p["title"] for p in second.get("/projects").json()] == ["second"]
             assert first.post("/dispatchers/main", json={"yaml": source}).status_code == 201
             assert second.get("/dispatchers").json() == []
-            assert first.put("/settings", json={"intent_timeout": 30, "reason_timeout": 45}).status_code == 200
-            assert second.get("/settings").json() == {"intent_timeout": 15, "reason_timeout": 15}
-        assert first.get("/settings").json() == {"intent_timeout": 30, "reason_timeout": 45}
+            assert (
+                first.put(
+                    "/settings",
+                    json={"intent_timeout": 30, "reason_timeout": 45, "dispatcher_heartbeat_timeout": 60},
+                ).status_code
+                == 200
+            )
+            assert second.get("/settings").json() == {
+                "intent_timeout": 15,
+                "reason_timeout": 15,
+                "dispatcher_heartbeat_timeout": 45,
+            }
+        assert first.get("/settings").json() == {
+            "intent_timeout": 30,
+            "reason_timeout": 45,
+            "dispatcher_heartbeat_timeout": 60,
+        }
     assert (tmp_path / "first/cairn.db").is_file()
     assert (tmp_path / "second/cairn.db").is_file()
 
@@ -316,6 +350,7 @@ def test_dispatcher_names_respect_filesystem_component_limit(client, source):
 def test_request_and_explicit_database_connections_remain_separate(tmp_path):
     user_auth = basic_headers(TEST_AUTH.username, TEST_AUTH.password)
     with TestClient(create_app(tmp_path / "first", auth=TEST_AUTH), headers=user_auth) as first:
+        dispatcher_login(first)
         first.post("/projects", json={"title": "first", "origin": "start", "goal": "finish"})
         with TestClient(create_app(tmp_path / "second", auth=TEST_AUTH), headers=user_auth) as second:
             request = Request({"type": "http", "app": first.app})
@@ -366,6 +401,10 @@ def test_dispatch_cli_reports_remote_config_errors_without_echoing_values(client
             expected = "config: Value error, worker names must be unique"
         (tmp_path / "dispatcher/broken.yaml").write_text(yaml.safe_dump(payload))
     monkeypatch.setattr(CairnClient, "_session", lambda _self: client)
+    monkeypatch.setattr(
+        "cairn.dispatcher.scheduler.loop.login_dispatcher",
+        lambda *_args, **_kwargs: DispatcherLoginResponse.model_validate(dispatcher_login(client)),
+    )
     result = CliRunner().invoke(
         main,
         ["dispatch", "--name", "broken", "--server-url", "http://testserver", "--api-key", "dispatch-key", "--once"],
@@ -392,6 +431,10 @@ def test_dispatch_cli_identifies_fields_in_incompatible_server_responses(monkeyp
     session = requests.Session()
     monkeypatch.setattr(session, "get", lambda *_args, **_kwargs: response)
     monkeypatch.setattr(CairnClient, "_session", lambda _self: session)
+    monkeypatch.setattr(
+        "cairn.dispatcher.scheduler.loop.login_dispatcher",
+        lambda *_args, **_kwargs: DispatcherLoginResponse(dispatcher_id="d", token="t", heartbeat_interval=15, heartbeat_timeout=45),
+    )
     result = CliRunner().invoke(main, ["dispatch", "--name", "main", "--api-key", "dispatch-key", "--once"])
     assert result.exit_code == 1
     assert f"invalid dispatcher config: {expected}" in result.output

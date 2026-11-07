@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from cairn.dispatcher.protocol.client import ApiResult, CairnClient
+from cairn.dispatcher.protocol.client import ApiResult, AuthError, CairnClient
 from cairn.dispatcher.runtime.process import ExecProcess
 
 
@@ -87,7 +87,11 @@ class HeartbeatLease:
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
-            result = self._heartbeat()
+            try:
+                result = self._heartbeat()
+            except AuthError as exc:
+                self._fail(exc.status_code, str(exc))
+                return
             if result.ok:
                 self._last_success_at = time.monotonic()
                 continue

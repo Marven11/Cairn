@@ -160,10 +160,10 @@ docker compose up --build
  
 This starts `cairn-server` on port `8000` and `cairn-dispatcher` once the server passes its health check. Open `http://localhost:8000` → Settings → Dispatchers to create the `default` configuration from `dispatch.example.yaml` with your LLM endpoints and API keys; the dispatcher restarts until it is available. The dispatcher connects to Docker via the host socket. Data and dispatcher YAML files are persisted to `./datas/cairn/`.
 
-Both services authenticate with HTTP Basic Auth. The values in `docker-compose.yaml` are examples for a quick start — **change them before any real deployment** (the port is published on all interfaces; the user/password pair grants full API access, and `CAIRN_DISPATCHER_API_KEY` must be identical on both services):
+Users authenticate with HTTP Basic Auth on every request; the dispatcher exchanges the shared API key for a JWT (`POST /runtime/dispatchers/login`, renewed after token expiry) and authenticates later requests with that token. The values in `docker-compose.yaml` are examples for a quick start — **change them before any real deployment** (the port is published on all interfaces; the user/password pair grants full API access, and `CAIRN_DISPATCHER_API_KEY` must be identical on both services):
 
 - `CAIRN_AUTH_USERNAME` / `CAIRN_AUTH_PASSWORD` — full-access user credentials; the username must not be `dispatcher`.
-- `CAIRN_DISPATCHER_API_KEY` — API key acting as the password for the fixed `dispatcher` user, which may only call the scheduling-related APIs.
+- `CAIRN_DISPATCHER_API_KEY` — API key the dispatcher exchanges for a JWT; bearer-token dispatchers may only call the scheduling-related APIs and only handle projects assigned to them. Dispatcher instances and project assignments live in server memory (the `/runtime/*` endpoints) and a project whose dispatcher stops sending heartbeats turns `halted` until that dispatcher sends heartbeats again or you reassign it in the project header; a restarted dispatcher logs in with a fresh id, so restarting it requires manual reassignment.
 
 The server speaks plain HTTP; put it behind a TLS-terminating reverse proxy for any deployment beyond localhost, since Basic Auth credentials are sent on every request. Credentials passed as CLI options are visible in the process list — prefer the `CAIRN_*` environment variables in shared environments.
 
@@ -194,7 +194,7 @@ uv run --project cairn cairn migrate-db multi-goal --db-path ~/.local/share/cair
 uv run --project cairn cairn serve --data-folder migrated-data --auth-username admin --auth-password secret --dispatcher-api-key dispatch-secret
 ```
 
-Databases from a version without intent weights can be upgraded the same way with `cairn migrate-db intent-weight`; the server refuses to start on databases written by older versions.
+Older databases are converted to the current layout with the matching `cairn migrate-db` subcommand: `multi-goal` for single-goal databases, `intent-weight` for ones without intent weights, and `settings-heartbeat` for ones without the dispatcher heartbeat setting; the server refuses to start and reports which one the database needs.
 
 The server's `--data-folder` defaults to `~/.local/share/cairn`, containing `cairn.db` and `dispatcher/<name>.yaml`. WebUI Settings supports creating, editing and deleting dispatcher configurations. Names use letters, digits, underscores and hyphens. Saved changes apply when the dispatcher restarts. The server URL is supplied through `--server-url`; YAML configurations contain the runtime, tasks and workers.
 

@@ -14,6 +14,7 @@ from cairn.server.auth import AuthConfig
 from cairn.server.migrate import (
     migrate_database,
     migrate_intent_weight as run_intent_weight_migration,
+    migrate_settings_heartbeat as run_settings_heartbeat_migration,
 )
 
 
@@ -57,7 +58,7 @@ def _dispatcher_name(_ctx, _param, value: str) -> str:
     "--dispatcher-api-key",
     envvar="CAIRN_DISPATCHER_API_KEY",
     required=True,
-    help="API key used as the basic-auth password for the fixed 'dispatcher' user (env: CAIRN_DISPATCHER_API_KEY)",
+    help="API key dispatchers exchange for a JWT at POST /runtime/dispatchers/login (env: CAIRN_DISPATCHER_API_KEY)",
 )
 def serve(
     host: str,
@@ -144,6 +145,31 @@ def migrate_intent_weight(source_path: Path, target_path: Path) -> None:
     click.echo(report.summary())
 
 
+@migrate_db.command("settings-heartbeat")
+@click.option(
+    "--db-path",
+    "source_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="Database to upgrade",
+)
+@click.option(
+    "--target",
+    "target_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    required=True,
+    help="Output path for the upgraded database (must not exist)",
+)
+def migrate_settings_heartbeat(source_path: Path, target_path: Path) -> None:
+    """Add the dispatcher heartbeat column to the settings table."""
+    try:
+        report = run_settings_heartbeat_migration(source_path, target_path)
+    except (ValueError, sqlite3.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"migrated {source_path} -> {target_path}")
+    click.echo(report.summary())
+
+
 @main.command()
 @click.option(
     "--server-url",
@@ -156,7 +182,12 @@ def migrate_intent_weight(source_path: Path, target_path: Path) -> None:
     "--api-key",
     envvar="CAIRN_DISPATCHER_API_KEY",
     required=True,
-    help="API key used as the basic-auth password for the fixed 'dispatcher' user (env: CAIRN_DISPATCHER_API_KEY)",
+    help="API key exchanged for a JWT at POST /runtime/dispatchers/login (env: CAIRN_DISPATCHER_API_KEY)",
+)
+@click.option(
+    "--hostname",
+    default=None,
+    help="Hostname reported to the server at login (default: this machine's hostname)",
 )
 @click.option("--once", is_flag=True, help="Run one scheduling iteration and exit")
 @click.option(
@@ -169,6 +200,7 @@ def dispatch(
     server_url: str,
     name: str,
     api_key: str,
+    hostname: str | None,
     once: bool,
     startup_healthcheck_only: bool,
     log_level: str,
@@ -176,7 +208,9 @@ def dispatch(
     """Run the Cairn dispatcher."""
     configure_logging(log_level, bare=startup_healthcheck_only)
     try:
-        loop = DispatcherLoop(server_url, name, api_key=api_key)
+        loop = DispatcherLoop(
+            server_url, name, api_key=api_key, hostname=hostname, start_heartbeat=not startup_healthcheck_only
+        )
         if startup_healthcheck_only:
             loop.run_startup_healthchecks_only()
             return

@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import logging
 import shutil
+import socket
 import subprocess
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 
 import requests
 
-from cairn.dispatcher.config import LocalConfig, WorkerConfig
+from cairn.dispatcher.config import DispatchConfig, LocalConfig, WorkerConfig
 from cairn.dispatcher.models import ReasonCheckpoint, RunningTask
-from cairn.dispatcher.protocol.client import CairnClient
+from cairn.dispatcher.protocol.client import (
+    AuthError,
+    CairnClient,
+    login_dispatcher,
+)
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.runtime.containers import ContainerManager
 from cairn.dispatcher.runtime.local_backend import LocalBackend
@@ -26,12 +32,18 @@ from cairn.dispatcher.tasks.common import (
 )
 from cairn.dispatcher.tasks.explore import run_explore_task
 from cairn.dispatcher.tasks.reason import run_reason_task
-from cairn.server.auth import DISPATCHER_USERNAME
 from cairn.server.models import Intent, ProjectDetail, ProjectSummary, is_goal_id
 
 LOG = logging.getLogger(__name__)
 UNHEALTHY_RETRY_AFTER_SECONDS = 5
 REJECTED_RETRY_AFTER_SECONDS = 5
+
+
+@dataclass(slots=True)
+class _AuthSession:
+    dispatcher_id: str
+    client: CairnClient
+    heartbeat_interval: int
 
 
 @dataclass(slots=True)
@@ -44,20 +56,37 @@ class WorkerSelection:
 
 
 class DispatcherLoop:
-    def __init__(self, server_url: str, name: str, *, api_key: str):
-        self.client = CairnClient(server_url, auth=(DISPATCHER_USERNAME, api_key))
-        try:
-            self.config = self.client.get_dispatch_config(name)
-        except Exception:
-            self.client.close()
-            raise
-        if self.config.runtime.execution == "local":
-            self.container_manager = LocalBackend(self.config.local or LocalConfig())
-        else:
-            assert self.config.container is not None
-            self.container_manager = ContainerManager(self.config.container)
-        self.executor = ThreadPoolExecutor(max_workers=self.config.runtime.max_workers)
-        self.cleanup_executor = ThreadPoolExecutor(max_workers=max(1, min(8, self.config.runtime.max_workers)))
+    """Dispatcher runtime with a two-state auth lifecycle.
+
+    The loop starts unauthenticated: ``_login`` exchanges the api key for a
+    JWT (the "running" state). Any 401 from the server raises ``AuthError``,
+    which drops every in-memory state (including running agents) and returns
+    the loop to the unauthenticated state; the next iteration logs in again.
+    """
+
+    def __init__(
+        self,
+        server_url: str,
+        name: str,
+        *,
+        api_key: str,
+        hostname: str | None = None,
+        start_heartbeat: bool = True,
+    ):
+        self.server_url = server_url
+        self.name = name
+        self.api_key = api_key
+        self.hostname = (socket.gethostname().strip() if hostname is None else hostname.strip())
+        self._auth: _AuthSession | None = None
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
+        self._heartbeat_enabled = start_heartbeat
+        self._relogin_requested = threading.Event()
+        self._relogin_prior_id: str | None = None
+        self.config: DispatchConfig | None = None
+        self.container_manager: ContainerManager | LocalBackend | None = None
+        self.executor: ThreadPoolExecutor | None = None
+        self.cleanup_executor: ThreadPoolExecutor | None = None
         self.futures: dict[Future[str], RunningTask] = {}
         self.cleanup_futures: dict[Future[bool], tuple[str, str | None, str | None]] = {}
         self.reason_checkpoints: dict[str, ReasonCheckpoint] = {}
@@ -68,32 +97,166 @@ class DispatcherLoop:
         self._cleanup_pending: set[str] = set()
         self._inactive_cleanup_done: dict[str, str] = {}
         self.project_cursor = 0
-        self._settings_checked = False
         self._startup_healthchecks_checked = False
+        try:
+            self._login()
+            try:
+                self.config = self.client.get_dispatch_config(name)
+            except AuthError:
+                self._relogin_after_auth_reset()
+                self.config = self.client.get_dispatch_config(name)
+            if self.config.runtime.execution == "local":
+                self.container_manager = LocalBackend(self.config.local or LocalConfig())
+            else:
+                assert self.config.container is not None
+                self.container_manager = ContainerManager(self.config.container)
+            self.executor = ThreadPoolExecutor(max_workers=self.config.runtime.max_workers)
+            self.cleanup_executor = ThreadPoolExecutor(
+                max_workers=max(1, min(8, self.config.runtime.max_workers))
+            )
+            if self._heartbeat_enabled:
+                self._heartbeat_thread = threading.Thread(
+                    target=self._dispatcher_heartbeat_loop, name="dispatcher-heartbeat", daemon=True
+                )
+                self._heartbeat_thread.start()
+        except Exception:
+            self.close()
+            raise
+
+    @property
+    def client(self) -> CairnClient:
+        assert self._auth is not None, "dispatcher is not logged in"
+        return self._auth.client
+
+    @property
+    def dispatcher_id(self) -> str:
+        assert self._auth is not None, "dispatcher is not logged in"
+        return self._auth.dispatcher_id
+
+    def _login(self) -> None:
+        prior = self._relogin_prior_id
+        try:
+            login = login_dispatcher(
+                self.server_url,
+                self.name,
+                self.hostname,
+                api_key=self.api_key,
+                prior_dispatcher_id=prior,
+            )
+            self._relogin_prior_id = None
+        except AuthError as exc:
+            raise RuntimeError(f"dispatcher login failed: {exc}") from exc
+        self._auth = _AuthSession(
+            dispatcher_id=login.dispatcher_id,
+            client=CairnClient(self.server_url, token=login.token),
+            heartbeat_interval=login.heartbeat_interval,
+        )
+        if self._heartbeat_enabled:
+            beat = self._auth.client.dispatcher_heartbeat()
+            if not beat.ok:
+                LOG.warning("first heartbeat after login failed status=%s", beat.status_code)
+        LOG.info(
+            "dispatcher logged in dispatcher_id=%s hostname=%s heartbeat_interval=%ss",
+            login.dispatcher_id,
+            self.hostname,
+            login.heartbeat_interval,
+        )
+
+    def _logout(self) -> None:
+        auth = self._auth
+        self._auth = None
+        if auth is not None:
+            auth.client.close()
+
+    def _abandon_auth_session(self) -> None:
+        """Drop every in-memory state (running agents included) and log out."""
+        for task in self.futures.values():
+            task.cancellation.cancel("auth-expired")
+        for future in list(self.futures):
+            try:
+                future.result()
+            except Exception:
+                LOG.debug("dropped task outcome during auth reset", exc_info=True)
+        self._reap_futures()
+        for future in list(self.cleanup_futures):
+            try:
+                future.result()
+            except Exception:
+                LOG.debug("dropped cleanup outcome during auth reset", exc_info=True)
+        self._reap_cleanup_futures()
+        self.reason_checkpoints.clear()
+        self.runtime_project_ids.clear()
+        self.worker_unhealthy_until.clear()
+        self.worker_rejected_until.clear()
+        self._inactive_cleanup_done.clear()
+        self._log_state.clear()
+        if self._auth is not None:
+            self._relogin_prior_id = self._auth.dispatcher_id
+        self._logout()
+
+    def _relogin_after_auth_reset(self) -> None:
+        """Drop the session and log in again for a startup-phase 401."""
+        self._abandon_auth_session()
+        self._login()
+
+    def _dispatcher_heartbeat_loop(self) -> None:
+        while not self._heartbeat_stop.is_set():
+            auth = self._auth
+            if auth is None:
+                if self._heartbeat_stop.wait(0.5):
+                    break
+                continue
+            try:
+                result = auth.client.dispatcher_heartbeat()
+            except AuthError:
+                LOG.warning("dispatcher session expired; waiting for the main loop to re-login")
+                self._relogin_requested.set()
+            else:
+                if not result.ok:
+                    LOG.warning(
+                        "dispatcher heartbeat failed status=%s body=%s",
+                        result.status_code,
+                        result.text,
+                    )
+            if self._heartbeat_stop.wait(auth.heartbeat_interval):
+                break
 
     def close(self) -> None:
+        self._heartbeat_stop.set()
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=2)
         if self.futures:
             LOG.info(
                 "dispatcher shutting down waiting_for_tasks=%s running_projects=%s",
                 len(self.futures),
                 sorted({task.project_id for task in self.futures.values()}),
             )
-        self.executor.shutdown(wait=True)
-        self.cleanup_executor.shutdown(wait=True)
-        self.container_manager.close()
-        self.client.close()
+        if self.executor is not None:
+            self.executor.shutdown(wait=True)
+        if self.cleanup_executor is not None:
+            self.cleanup_executor.shutdown(wait=True)
+        if self.container_manager is not None:
+            self.container_manager.close()
+        self._logout()
 
     def run(self, once: bool = False) -> None:
         try:
             self.run_startup_healthchecks()
+            try:
+                self._validate_server_settings()
+            except AuthError:
+                self._relogin_after_auth_reset()
+                self._validate_server_settings()
             while True:
                 try:
-                    if not self._settings_checked:
-                        self._validate_server_settings()
-                        self._settings_checked = True
+                    if self._relogin_requested.is_set():
+                        self._relogin_requested.clear()
+                        self._abandon_auth_session()
+                    if self._auth is None:
+                        self._login()
                     self._reap_futures()
                     self._reap_cleanup_futures()
-                    summaries = self.client.list_projects()
+                    summaries = self._list_assigned_projects()
                     self._initialize_reason_checkpoints(summaries)
                     self._refresh_runtime_projects(summaries)
                     self._cancel_inactive_tasks(summaries)
@@ -109,11 +272,26 @@ class DispatcherLoop:
                     )
                     time.sleep(self.config.runtime.interval)
                     continue
+                except AuthError as exc:
+                    if once:
+                        raise
+                    LOG.warning("dispatcher token rejected error=%s", exc)
+                    self._abandon_auth_session()
+                    continue
                 if once:
                     break
                 time.sleep(self.config.runtime.interval)
         finally:
             self.close()
+
+    def _list_assigned_projects(self) -> list[ProjectSummary]:
+        """Only projects assigned to this dispatcher instance are scheduled."""
+        summaries = self.client.list_projects()
+        return [
+            summary
+            for summary in summaries
+            if summary.dispatcher is not None and summary.dispatcher.id == self.dispatcher_id
+        ]
 
     def run_startup_healthchecks_only(self) -> None:
         try:
@@ -831,8 +1009,8 @@ class DispatcherLoop:
                 LOG.exception("container cleanup failed container=%s", name)
 
     def _refresh_runtime_projects(self, summaries: list[ProjectSummary]) -> None:
-        active_ids = {summary.id for summary in summaries if summary.status == "active"}
-        self.runtime_project_ids.intersection_update(active_ids)
+        held_ids = {summary.id for summary in summaries if summary.status in ("active", "halted")}
+        self.runtime_project_ids.intersection_update(held_ids)
         inactive_status_by_id = {summary.id: summary.status for summary in summaries if summary.status != "active"}
         for project_id, status in list(self._inactive_cleanup_done.items()):
             current_status = inactive_status_by_id.get(project_id)
@@ -843,7 +1021,7 @@ class DispatcherLoop:
         status_by_project = {summary.id: summary.status for summary in summaries}
         for task in self.futures.values():
             status = status_by_project.get(task.project_id, "deleted")
-            if status != "active" and task.cancellation.cancel(status):
+            if status in ("stopped", "completed", "deleted") and task.cancellation.cancel(status):
                 LOG.info(
                     "cancelling running task for inactive project project=%s task=%s worker=%s status=%s",
                     task.project_id,

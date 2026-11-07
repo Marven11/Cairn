@@ -5,7 +5,7 @@ import pytest
 
 from cairn.server import db
 from cairn.server.app import create_app
-from conftest import TEST_AUTH, basic_headers
+from conftest import TEST_AUTH, basic_headers, dispatcher_login
 
 
 @pytest.fixture
@@ -14,6 +14,7 @@ def client(tmp_path) -> TestClient:
         create_app(tmp_path, auth=TEST_AUTH),
         headers=basic_headers(TEST_AUTH.username, TEST_AUTH.password),
     ) as test_client:
+        dispatcher_login(test_client)
         yield test_client
 
 
@@ -198,9 +199,13 @@ def test_boost_rejects_missing_and_concluded_intents(client: TestClient) -> None
 def test_settings_and_export_are_backed_by_the_same_database(client: TestClient) -> None:
     project_id = _create_project(client)
 
-    response = client.put("/settings", json={"intent_timeout": 30, "reason_timeout": 45})
+    response = client.put("/settings", json={"intent_timeout": 30, "reason_timeout": 45, "dispatcher_heartbeat_timeout": 60})
     assert response.status_code == 200
-    assert client.get("/settings").json() == {"intent_timeout": 30, "reason_timeout": 45}
+    assert client.get("/settings").json() == {
+        "intent_timeout": 30,
+        "reason_timeout": 45,
+        "dispatcher_heartbeat_timeout": 60,
+    }
 
     exported = client.get(f"/projects/{project_id}/export?format=yaml")
     assert exported.status_code == 200

@@ -3,11 +3,13 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass, field
 
+from fastapi.testclient import TestClient
+
 from cairn.dispatcher.config import DispatchConfig
 from cairn.dispatcher.protocol.client import ApiResult
 from cairn.dispatcher.workers.base import DriverResult
 from cairn.dispatcher.workers.health import HealthResult
-from cairn.server.auth import AuthConfig
+from cairn.server.auth import DISPATCHER_USERNAME, AuthConfig
 from cairn.server.models import Fact, Hint, Intent, ProjectDetail, ProjectMeta
 
 TEST_AUTH = AuthConfig(username="tester", password="secret", dispatcher_api_key="dispatch-key")
@@ -16,6 +18,40 @@ TEST_AUTH = AuthConfig(username="tester", password="secret", dispatcher_api_key=
 def basic_headers(username: str, password: str) -> dict[str, str]:
     token = base64.b64encode(f"{username}:{password}".encode()).decode()
     return {"Authorization": f"Basic {token}"}
+
+
+def dispatcher_login(
+    client: TestClient,
+    name: str = "main",
+    hostname: str = "test-host",
+) -> dict:
+    """Log a dispatcher instance in and return the login payload
+    (dispatcher_id / token / heartbeat fields)."""
+    listing = client.get(
+        "/runtime/dispatchers", headers=basic_headers(TEST_AUTH.username, TEST_AUTH.password)
+    )
+    assert listing.status_code == 200, listing.text
+    entries = listing.json()
+    assert isinstance(entries, list)
+    prior = None
+    for entry in entries:
+        if entry["name"] == name and entry["hostname"] == hostname:
+            prior = entry["id"]
+            break
+    response = client.post(
+        "/runtime/dispatchers/login",
+        json={"name": name, "hostname": hostname, "dispatcher_id": prior},
+        headers=basic_headers(DISPATCHER_USERNAME, TEST_AUTH.dispatcher_api_key),
+    )
+    assert response.status_code == 200, response.text
+    session = response.json()
+    heartbeat = client.post("/runtime/dispatchers/heartbeat", headers=bearer_headers(session["token"]))
+    assert heartbeat.status_code == 200, heartbeat.text
+    return session
+
+
+def bearer_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 def make_config() -> DispatchConfig:

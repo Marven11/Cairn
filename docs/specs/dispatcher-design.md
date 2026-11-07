@@ -159,7 +159,7 @@ Worker 选择规则：
 Dispatcher 的运行期配置由 Server 保存在 `<data-folder>/dispatcher/<name>.yaml`，可通过 WebUI Settings → Dispatchers 新增、编辑和删除。
 
 - Server 的 `--data-folder` 默认是 `~/.local/share/cairn`，数据库位于其中的 `cairn.db`
-- Dispatcher 通过 `--server-url` 和 `--name` 指定服务端与配置名，用 `--api-key`（或环境变量 `CAIRN_DISPATCHER_API_KEY`）携带 `dispatcher` 角色的 Basic Auth 凭据，启动时获取 Pydantic 校验后的 JSON；凭据缺失时 CLI 直接报错退出（不发请求），凭据错误时启动拉取配置的请求返回 `401` 并报错退出；保存修改后重启 Dispatcher 生效
+- Dispatcher 通过 `--server-url` 和 `--name` 指定服务端与配置名，用 `--api-key`（或环境变量 `CAIRN_DISPATCHER_API_KEY`）在 `POST /runtime/dispatchers/login` 以固定用户名 `dispatcher` 的 Basic 凭据换取 JWT，之后所有的 API 请求以该 JWT 的 Bearer 身份调用（含启动时获取 Pydantic 校验后的 JSON）；凭据缺失时 CLI 直接报错退出（不发请求），凭据错误时登录请求返回 `401` 并报错退出，运行中 JWT 被拒绝时清空状态并重新登录（详见 server-protocol 的认证章节）；保存修改后重启 Dispatcher 生效
 - 配置名使用 1–250 个英文字母、数字、下划线或连字符
 - 任务 prompt 以 markdown 文件形式随代码分发，并通过 `runtime.prompt_group` 选择目录
 - Worker 的健康检查、命令模板、session 处理、二阶段收尾能力由对应 driver 实现
@@ -874,7 +874,10 @@ codex exec resume "{session}" --dangerously-bypass-approvals-and-sandbox --model
 | --- | --- | --- |
 | `--server-url` | 否 | Cairn Server 的 base URL，默认 `http://127.0.0.1:8000` |
 | `--name` | 是 | Server 维护的配置名 |
-| `--api-key` | 是 | Dispatcher 凭据：作为固定用户名 `dispatcher` 的 Basic Auth 密码；也可用环境变量 `CAIRN_DISPATCHER_API_KEY` 注入。服务端需配置相同的 key |
+| `--api-key` | 是 | Dispatcher 凭据：启动时在 `POST /runtime/dispatchers/login` 用固定用户名 `dispatcher` 换取 JWT，后续请求以该 Bearer token 身份调用；也可用环境变量 `CAIRN_DISPATCHER_API_KEY` 注入。服务端需配置相同的 key |
+| `--hostname` | 否 | 登录时上报给 Server 的主机名，默认本机 hostname；Server 用 (name, hostname) 加 dispatcher id 标识一个实例，项目只派发给自己的 dispatcher |
+
+Dispatcher 的认证状态机只有两态：启动后未登录，用 api key 登录拿到配置与 JWT 后进入运行态；任意请求收到 401（JWT 过期）时取消全部运行中任务、清空内存状态并重新登录（携带之前的 dispatcher id，服务端沿用同一实例身份），API key 被拒则直接退出。Dispatcher 以后台线程按登录下发的 `heartbeat_interval` 定时向 `POST /runtime/dispatchers/heartbeat` 心跳，服务端超过 `dispatcher_heartbeat_timeout` 未收到心跳即判定该实例 offline，其项目显示为 `halted`。
 
 ### `runtime.*`
 

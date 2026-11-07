@@ -15,10 +15,10 @@ from cairn.dispatcher.config import DispatchConfig
 from cairn.dispatcher.models import ReasonCheckpoint
 from cairn.dispatcher.protocol.client import ApiResult
 from cairn.dispatcher.runtime.process import ProcessResult
-from cairn.dispatcher.scheduler.loop import DispatcherLoop
+from cairn.dispatcher.scheduler.loop import DispatcherLoop, _AuthSession
 from cairn.server.app import create_app
 from cairn.server.models import ProjectDetail, ProjectSummary, Settings
-from conftest import TEST_AUTH, basic_headers
+from conftest import TEST_AUTH, basic_headers, dispatcher_login
 
 
 class InProcessClient:
@@ -253,10 +253,17 @@ def _config(
     )
 
 
-def _loop(config: DispatchConfig, client: InProcessClient, containers: LocalContainerManager) -> DispatcherLoop:
+def _loop(config: DispatchConfig, client: InProcessClient, containers: LocalContainerManager, session: dict) -> DispatcherLoop:
     loop = DispatcherLoop.__new__(DispatcherLoop)
     loop.config = config
-    loop.client = client
+    loop._heartbeat_enabled = True
+    loop._auth = _AuthSession(
+        dispatcher_id=session["dispatcher_id"],
+        client=client,
+        heartbeat_interval=session["heartbeat_interval"],
+    )
+    loop._heartbeat_stop = threading.Event()
+    loop._heartbeat_thread = None
     loop.container_manager = containers
     loop.executor = ThreadPoolExecutor(max_workers=config.runtime.max_workers)
     loop.cleanup_executor = ThreadPoolExecutor(max_workers=1)
@@ -275,7 +282,7 @@ def _loop(config: DispatchConfig, client: InProcessClient, containers: LocalCont
 
 def _dispatch_and_wait(loop: DispatcherLoop) -> None:
     loop._reap_futures()
-    summaries = loop.client.list_projects()
+    summaries = loop._list_assigned_projects()
     loop._initialize_reason_checkpoints(summaries)
     loop._refresh_runtime_projects(summaries)
     loop._cancel_inactive_tasks(summaries)
@@ -297,6 +304,7 @@ def _create_project(http: TestClient) -> str:
 
 
 def test_mock_scheduler_bootstrap_completes_project_end_to_end(http_client: TestClient) -> None:
+    session = dispatcher_login(http_client)
     client = InProcessClient(http_client)
     containers = LocalContainerManager()
     loop = _loop(
@@ -307,6 +315,7 @@ def test_mock_scheduler_bootstrap_completes_project_end_to_end(http_client: Test
         ),
         client,
         containers,
+        session,
     )
     project_id = _create_project(http_client)
 
@@ -325,6 +334,7 @@ def test_mock_scheduler_bootstrap_completes_project_end_to_end(http_client: Test
 
 
 def test_mock_scheduler_runs_reason_explore_reason_complete_chain(http_client: TestClient) -> None:
+    session = dispatcher_login(http_client)
     client = InProcessClient(http_client)
     containers = LocalContainerManager()
     loop = _loop(
@@ -335,6 +345,7 @@ def test_mock_scheduler_runs_reason_explore_reason_complete_chain(http_client: T
         ),
         client,
         containers,
+        session,
     )
     project_id = _create_project(http_client)
     seed = client.create_intent(project_id, ["origin"], "seed", "seed-worker")
@@ -365,6 +376,7 @@ def test_mock_scheduler_runs_reason_explore_reason_complete_chain(http_client: T
 def test_mock_scheduler_enabled_project_skips_bootstrap_when_worker_does_not_support_it(
     http_client: TestClient,
 ) -> None:
+    session = dispatcher_login(http_client)
     client = InProcessClient(http_client)
     containers = LocalContainerManager()
     loop = _loop(
@@ -376,6 +388,7 @@ def test_mock_scheduler_enabled_project_skips_bootstrap_when_worker_does_not_sup
         ),
         client,
         containers,
+        session,
     )
     project_id = _create_project(http_client)
 
@@ -393,6 +406,7 @@ def test_mock_scheduler_enabled_project_skips_bootstrap_when_worker_does_not_sup
 
 
 def test_task_healthcheck_healthy_worker_completes_end_to_end(http_client: TestClient) -> None:
+    session = dispatcher_login(http_client)
     client = InProcessClient(http_client)
     containers = LocalContainerManager()
     loop = _loop(
@@ -404,6 +418,7 @@ def test_task_healthcheck_healthy_worker_completes_end_to_end(http_client: TestC
         ),
         client,
         containers,
+        session,
     )
     project_id = _create_project(http_client)
 
@@ -418,6 +433,7 @@ def test_task_healthcheck_healthy_worker_completes_end_to_end(http_client: TestC
 
 
 def test_task_healthcheck_failure_aborts_task_and_cools_down_worker(http_client: TestClient) -> None:
+    session = dispatcher_login(http_client)
     client = InProcessClient(http_client)
     containers = LocalContainerManager()
     loop = _loop(
@@ -430,6 +446,7 @@ def test_task_healthcheck_failure_aborts_task_and_cools_down_worker(http_client:
         ),
         client,
         containers,
+        session,
     )
     project_id = _create_project(http_client)
 
@@ -487,9 +504,10 @@ def _failover_config() -> DispatchConfig:
 
 
 def test_unhealthy_worker_fails_over_to_healthy_worker(http_client: TestClient) -> None:
+    session = dispatcher_login(http_client)
     client = InProcessClient(http_client)
     containers = LocalContainerManager()
-    loop = _loop(_failover_config(), client, containers)
+    loop = _loop(_failover_config(), client, containers, session)
     project_id = _create_project(http_client)
 
     try:

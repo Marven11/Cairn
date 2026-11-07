@@ -38,7 +38,7 @@ def test_client_request_failure_returns_status_zero() -> None:
         def request(self, *_args, **_kwargs):
             raise requests.ConnectionError("offline")
 
-    client = CairnClient("http://server/", auth=("dispatcher", "key"))
+    client = CairnClient("http://server/", token="test-token")
     client._local.session = Session()
 
     result = client.create_intent("proj_001", ["f001"], "investigate", "reasoner")
@@ -76,7 +76,7 @@ def test_get_project_uses_etag_cache() -> None:
             FakeResponse(304, headers={"ETag": '"etag-v2"'}),
         ]
     )
-    client = CairnClient("http://server/", auth=("dispatcher", "key"))
+    client = CairnClient("http://server/", token="test-token")
     client._local.session = session
 
     first = client.get_project("proj_001")
@@ -98,7 +98,7 @@ def test_get_project_uses_etag_cache() -> None:
 
 def test_304_without_cache_entry_raises_protocol_error() -> None:
     session = FakeSession([FakeResponse(304)])
-    client = CairnClient("http://server/", auth=("dispatcher", "key"))
+    client = CairnClient("http://server/", token="test-token")
     client._local.session = session
 
     with pytest.raises(ProtocolError) as exc_info:

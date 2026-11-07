@@ -143,7 +143,7 @@ def run_worker_process(
 
 def project_allows_conclude_fallback(client: CairnClient, project_id: str, *, worker_name: str, intent_id: str) -> bool:
     project = client.get_project(project_id)
-    if project.project.status == "active":
+    if project.project.status in ("active", "halted"):
         return True
     LOG.info(
         "skip conclude fallback because project is no longer active project=%s intent=%s worker=%s status=%s",

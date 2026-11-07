@@ -9,7 +9,7 @@ from cairn.cli import main
 from cairn.server.app import create_app
 from cairn.server.auth import DISPATCHER_USERNAME, _BASIC_REALM, AuthConfig
 
-from conftest import TEST_AUTH, basic_headers, make_config
+from conftest import TEST_AUTH, basic_headers, bearer_headers, dispatcher_login, make_config
 
 
 @pytest.fixture
@@ -31,7 +31,10 @@ def user(app) -> TestClient:
 
 @pytest.fixture
 def dispatcher(app) -> TestClient:
-    with TestClient(app, headers=basic_headers(DISPATCHER_USERNAME, TEST_AUTH.dispatcher_api_key)) as client:
+    """A logged-in dispatcher instance issuing bearer-token requests."""
+    with TestClient(app) as client:
+        session = dispatcher_login(client)
+        client.headers.update(bearer_headers(session["token"]))
         yield client
 
 
@@ -75,13 +78,19 @@ def test_wrong_credentials_are_rejected(anonymous: TestClient) -> None:
     assert anonymous.get("/projects", headers=wrong).status_code == 401
     # the user password is not the dispatcher api key
     wrong_dispatcher = basic_headers(DISPATCHER_USERNAME, TEST_AUTH.password)
-    assert anonymous.get("/projects", headers=wrong_dispatcher).status_code == 401
+    assert anonymous.post("/runtime/dispatchers/login", json={"name": "main", "hostname": "h"}, headers=wrong_dispatcher).status_code == 401
     # an arbitrary username is not accepted either
     unknown = basic_headers("other", "secret")
     assert anonymous.get("/projects", headers=unknown).status_code == 401
+    # a bogus bearer token is not accepted
+    assert anonymous.get("/projects", headers=bearer_headers("not-a-jwt")).status_code == 401
+    # basic dispatcher credentials only work on the login endpoint
+    valid_dispatcher = basic_headers(DISPATCHER_USERNAME, TEST_AUTH.dispatcher_api_key)
+    assert anonymous.get("/projects", headers=valid_dispatcher).status_code == 401
 
 
 def test_user_can_call_every_endpoint(user: TestClient) -> None:
+    dispatcher_login(user)
     # projects lifecycle
     assert user.post("/projects", json=PROJECT_BODY).status_code == 201
     project_id = user.get("/projects").json()[0]["id"]
@@ -119,7 +128,16 @@ def test_user_can_call_every_endpoint(user: TestClient) -> None:
 
     # settings
     assert user.get("/settings").status_code == 200
-    assert user.put("/settings", json={"intent_timeout": 30, "reason_timeout": 45}).status_code == 200
+    assert (
+        user.put(
+            "/settings",
+            json={"intent_timeout": 30, "reason_timeout": 45, "dispatcher_heartbeat_timeout": 60},
+        ).status_code
+        == 200
+    )
+
+    # runtime dispatcher endpoints
+    assert user.get("/runtime/dispatchers").status_code == 200
 
     # dispatcher configs CRUD
     assert user.get("/dispatchers").status_code == 200
@@ -135,6 +153,7 @@ def test_user_can_call_every_endpoint(user: TestClient) -> None:
 
 
 def test_dispatcher_can_read_config_projects_settings_and_drive_graph(user: TestClient, dispatcher: TestClient) -> None:
+    dispatcher_login(user)
     user.post("/projects", json=PROJECT_BODY)
     project_id = user.get("/projects").json()[0]["id"]
 
@@ -142,6 +161,7 @@ def test_dispatcher_can_read_config_projects_settings_and_drive_graph(user: Test
     assert dispatcher.get(f"/projects/{project_id}").status_code == 200
     assert dispatcher.get("/settings").status_code == 200
     assert dispatcher.get(f"/projects/{project_id}/export?format=yaml").status_code == 200
+    assert dispatcher.post("/runtime/dispatchers/heartbeat").status_code == 200
     assert dispatcher.get("/dispatchers/main").status_code == 404  # config fetch itself is allowed
     assert (
         dispatcher.post(
@@ -177,6 +197,7 @@ def test_dispatcher_can_read_config_projects_settings_and_drive_graph(user: Test
 
 
 def test_dispatcher_cannot_call_user_only_endpoints(user: TestClient, dispatcher: TestClient, source: str) -> None:
+    dispatcher_login(user)
     user.post("/projects", json=PROJECT_BODY)
     project_id = user.get("/projects").json()[0]["id"]
 
@@ -192,9 +213,16 @@ def test_dispatcher_cannot_call_user_only_endpoints(user: TestClient, dispatcher
         ).status_code
         == 403
     )
-    assert dispatcher.put("/settings", json={"intent_timeout": 30, "reason_timeout": 45}).status_code == 403
+    assert (
+        dispatcher.put(
+            "/settings",
+            json={"intent_timeout": 30, "reason_timeout": 45, "dispatcher_heartbeat_timeout": 60},
+        ).status_code
+        == 403
+    )
     assert dispatcher.get("/dispatchers").status_code == 403
     assert dispatcher.get("/dispatchers/main/yaml").status_code == 403
+    assert dispatcher.get("/runtime/dispatchers").status_code == 403
     assert dispatcher.post("/dispatchers/other", json={"yaml": source}).status_code == 403
     assert dispatcher.put("/dispatchers/other", json={"yaml": source}).status_code == 403
     assert dispatcher.delete("/dispatchers/other").status_code == 403
@@ -207,8 +235,9 @@ def test_openapi_schema_stays_public_and_documents_auth(anonymous: TestClient) -
     assert "/projects" in paths
     assert "/dispatchers/{name}" in paths
     assert "/settings" in paths
-    # protected routes advertise HTTPBasic, anonymous ones do not
-    assert paths["/projects"]["get"]["security"] == [{"HTTPBasic": []}]
+    assert "/runtime/dispatchers/login" in paths
+    assert paths["/projects"]["get"]["security"] == [{"HTTPBasic": []}, {"HTTPBearer": []}]
+    assert paths["/runtime/dispatchers/login"]["post"]["security"] == [{"HTTPBasic": []}]
     assert "security" not in paths["/healthz"]["get"]
 
 

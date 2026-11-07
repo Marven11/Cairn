@@ -4,7 +4,14 @@ from dataclasses import dataclass
 from typing import Annotated, Literal
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBasic,
+    HTTPBasicCredentials,
+    HTTPBearer,
+)
+
+from cairn.server.tokens import verify_token
 
 DISPATCHER_USERNAME = "dispatcher"
 
@@ -19,9 +26,10 @@ ROLE_DISPATCHER: Role = "dispatcher"
 class AuthConfig:
     """Credentials for the two authenticated principals of the Cairn API.
 
-    Regular users authenticate with ``username``/``password``; dispatchers
-    authenticate with the fixed username ``dispatcher`` and
-    ``dispatcher_api_key`` as the password.
+    Regular users authenticate with ``username``/``password``. Dispatchers
+    boot up unauthenticated and exchange the fixed username ``dispatcher``
+    plus ``dispatcher_api_key`` for a JWT at ``POST /runtime/dispatchers/login``;
+    every later request is authorized with that JWT as a bearer token.
     """
 
     username: str
@@ -35,9 +43,6 @@ class AuthConfig:
             raise ValueError("auth password and dispatcher api key must not be the same value")
         if ":" in self.username:
             raise ValueError("auth username must not contain ':' (HTTP Basic splits on the first colon)")
-        # HTTP Basic headers are ASCII-decoded on the server (fastapi) and
-        # latin-1-encoded on the client (requests), so credentials outside
-        # ASCII can never match — reject them at startup instead.
         for name, value in (
             ("username", self.username),
             ("password", self.password),
@@ -49,37 +54,68 @@ class AuthConfig:
                 raise ValueError(f"auth {name} must only contain ASCII characters") from exc
 
 
-_basic_scheme = HTTPBasic(realm=_BASIC_REALM)
+@dataclass(frozen=True, slots=True)
+class Principal:
+    role: Role
+    dispatcher_id: str | None = None
 
 
-def _unauthorized() -> HTTPException:
+_basic_scheme = HTTPBasic(realm=_BASIC_REALM, auto_error=False)
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _unauthorized(detail: str = "invalid credentials") -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="invalid credentials",
+        detail=detail,
         headers={"WWW-Authenticate": f'Basic realm="{_BASIC_REALM}"'},
     )
 
 
 def authenticate(
     request: Request,
-    credentials: Annotated[HTTPBasicCredentials, Depends(_basic_scheme)],
-) -> Role:
-    # malformed/missing Authorization headers are rejected by _basic_scheme
-    # itself (401 with the same WWW-Authenticate realm); reaching this point
-    # means the payload parsed into valid credentials
-    config: AuthConfig = request.app.state.auth_config
-    if credentials.username == DISPATCHER_USERNAME:
-        if credentials.password != config.dispatcher_api_key:
+    basic: Annotated[HTTPBasicCredentials | None, Depends(_basic_scheme)],
+    bearer: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)],
+) -> Principal:
+    if bearer is not None:
+        secret: bytes = request.app.state.dispatcher_jwt_secret
+        dispatcher_id = verify_token(secret, bearer.credentials)
+        if dispatcher_id is None or request.app.state.dispatcher_registry.get(dispatcher_id) is None:
             raise _unauthorized()
-        return ROLE_DISPATCHER
-    if credentials.username == config.username and credentials.password == config.password:
-        return ROLE_USER
-    raise _unauthorized()
+        return Principal(role=ROLE_DISPATCHER, dispatcher_id=dispatcher_id)
+    if basic is not None:
+        config: AuthConfig = request.app.state.auth_config
+        if basic.username == config.username and basic.password == config.password:
+            return Principal(role=ROLE_USER)
+        raise _unauthorized()
+    raise _unauthorized("Not authenticated")
 
 
-def require_user(role: Annotated[Role, Depends(authenticate)]) -> None:
-    if role != ROLE_USER:
+def authenticate_dispatcher_login(
+    request: Request,
+    basic: Annotated[HTTPBasicCredentials | None, Depends(_basic_scheme)],
+) -> None:
+    """Allow only the fixed dispatcher Basic credentials, used by the
+    ``POST /runtime/dispatchers/login`` endpoint."""
+    config: AuthConfig = request.app.state.auth_config
+    if basic is None:
+        raise _unauthorized("Not authenticated")
+    if basic.username != DISPATCHER_USERNAME or basic.password != config.dispatcher_api_key:
+        raise _unauthorized()
+
+
+def require_user(principal: Annotated[Principal, Depends(authenticate)]) -> None:
+    if principal.role != ROLE_USER:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="this endpoint requires user credentials",
         )
+
+
+def require_dispatcher(principal: Annotated[Principal, Depends(authenticate)]) -> str:
+    if principal.role != ROLE_DISPATCHER or principal.dispatcher_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="this endpoint requires a dispatcher bearer token",
+        )
+    return principal.dispatcher_id

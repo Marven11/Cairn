@@ -4,7 +4,7 @@ from concurrent.futures import Future
 
 from cairn.dispatcher.models import ReasonCheckpoint, RunningTask
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
-from cairn.dispatcher.scheduler.loop import DispatcherLoop
+from cairn.dispatcher.scheduler.loop import DispatcherLoop, _AuthSession
 from cairn.dispatcher.scheduler.worker_select import choose_worker
 from cairn.server.models import Fact, ProjectSummary
 
@@ -13,6 +13,7 @@ from conftest import make_config, make_intent, make_project
 
 def _loop() -> DispatcherLoop:
     loop = DispatcherLoop.__new__(DispatcherLoop)
+    loop._heartbeat_enabled = True
     loop.reason_checkpoints = {}
     loop.runtime_project_ids = set()
     loop.cleanup_futures = {}
@@ -138,14 +139,18 @@ def test_new_fact_dispatches_reason_before_unclaimed_explore_intent() -> None:
         open_intent_count=1,
     )
     loop.container_manager = type("Containers", (), {"container_name": lambda _self, project_id: project_id})()
-    loop.client = type(
-        "Client",
-        (),
-        {
+    loop._auth = _AuthSession(
+        dispatcher_id="test-dispatcher",
+        heartbeat_interval=15,
+        client=type(
+            "Client",
+            (),
+            {
             "get_project": lambda _self, _project_id: project,
             "export_project": lambda _self, _project_id: "graph",
-        },
-    )()
+            },
+        )(),
+    )
     dispatched: list[tuple[str, str]] = []
     loop._dispatch_reason = lambda _project, _graph, trigger: dispatched.append(("reason", trigger)) or True
     loop._dispatch_explore = lambda *_args: dispatched.append(("explore", "")) or True
@@ -168,14 +173,18 @@ def test_initial_enabled_project_without_bootstrap_worker_dispatches_reason() ->
     project = make_project()
     project.facts = project.facts[:2]
     loop.container_manager = type("Containers", (), {"container_name": lambda _self, project_id: project_id})()
-    loop.client = type(
-        "Client",
-        (),
-        {
+    loop._auth = _AuthSession(
+        dispatcher_id="test-dispatcher",
+        heartbeat_interval=15,
+        client=type(
+            "Client",
+            (),
+            {
             "get_project": lambda _self, _project_id: project,
             "export_project": lambda _self, _project_id: "graph",
-        },
-    )()
+            },
+        )(),
+    )
     dispatched: list[tuple[str, str]] = []
     loop._dispatch_initial_project = lambda _project: dispatched.append(("bootstrap", "")) or True
     loop._dispatch_reason = lambda _project, _graph, trigger: dispatched.append(("reason", trigger)) or True
@@ -192,14 +201,18 @@ def test_initial_disabled_project_skips_configured_bootstrap_worker() -> None:
     project.project.bootstrap_enabled = False
     project.facts = project.facts[:2]
     loop.container_manager = type("Containers", (), {"container_name": lambda _self, project_id: project_id})()
-    loop.client = type(
-        "Client",
-        (),
-        {
+    loop._auth = _AuthSession(
+        dispatcher_id="test-dispatcher",
+        heartbeat_interval=15,
+        client=type(
+            "Client",
+            (),
+            {
             "get_project": lambda _self, _project_id: project,
             "export_project": lambda _self, _project_id: "graph",
-        },
-    )()
+            },
+        )(),
+    )
     dispatched: list[tuple[str, str]] = []
     loop._dispatch_initial_project = lambda _project: dispatched.append(("bootstrap", "")) or True
     loop._dispatch_reason = lambda _project, _graph, trigger: dispatched.append(("reason", trigger)) or True
@@ -263,14 +276,18 @@ def test_explore_prefers_higher_weight_intent_then_newest() -> None:
         open_intent_count=2,
     )
     loop.container_manager = type("Containers", (), {"container_name": lambda _self, project_id: project_id})()
-    loop.client = type(
-        "Client",
-        (),
-        {
+    loop._auth = _AuthSession(
+        dispatcher_id="test-dispatcher",
+        heartbeat_interval=15,
+        client=type(
+            "Client",
+            (),
+            {
             "get_project": lambda _self, _project_id: project,
             "export_project": lambda _self, _project_id: "graph",
-        },
-    )()
+            },
+        )(),
+    )
     dispatched: list[Intent] = []
     loop._dispatch_explore = lambda _project, _graph, intent: dispatched.append(intent) or True
 
@@ -372,3 +389,43 @@ def test_startup_only_worker_healthcheck_runs_automatic_startup_check() -> None:
     loop.run_startup_healthchecks()
 
     assert calls == [False]
+
+
+def test_cancel_inactive_tasks_spares_halted_and_cancels_real_shutdown() -> None:
+    halted_future: Future[str] = Future()
+    stopped_future: Future[str] = Future()
+    deleted_future: Future[str] = Future()
+    loop = _loop()
+    loop.futures = {
+        halted_future: RunningTask("p_halted", "reason", "w", TaskCancellation()),
+        stopped_future: RunningTask("p_stopped", "reason", "w", TaskCancellation()),
+        deleted_future: RunningTask("p_gone", "reason", "w", TaskCancellation()),
+    }
+
+    loop._cancel_inactive_tasks(
+        [
+            _summary("p_halted", "halted"),
+            _summary("p_stopped", "stopped"),
+        ]
+    )
+
+    assert loop.futures[halted_future].cancellation.is_cancelled is False
+    assert loop.futures[stopped_future].cancellation.is_cancelled is True
+    assert loop.futures[stopped_future].cancellation.reason == "stopped"
+    assert loop.futures[deleted_future].cancellation.is_cancelled is True
+    assert loop.futures[deleted_future].cancellation.reason == "deleted"
+
+
+def test_refresh_runtime_projects_keeps_halted_in_the_held_set() -> None:
+    loop = _loop()
+    loop.runtime_project_ids = {"p_active", "p_halted", "p_stopped"}
+
+    loop._refresh_runtime_projects(
+        [
+            _summary("p_active", "active"),
+            _summary("p_halted", "halted"),
+            _summary("p_stopped", "stopped"),
+        ]
+    )
+
+    assert loop.runtime_project_ids == {"p_active", "p_halted"}
