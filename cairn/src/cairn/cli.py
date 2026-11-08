@@ -1,5 +1,7 @@
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 import click
 from pydantic import ValidationError
@@ -95,6 +97,23 @@ def migrate_db() -> None:
     """Convert or upgrade a database between Cairn schema versions."""
 
 
+class _MigrationReport(Protocol):
+    def summary(self) -> str: ...
+
+
+def _run_migration_command(
+    migration: Callable[[Path, Path], _MigrationReport],
+    source_path: Path,
+    target_path: Path,
+) -> None:
+    try:
+        report = migration(source_path, target_path)
+    except (ValueError, sqlite3.Error) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"migrated {source_path} -> {target_path}")
+    click.echo(report.summary())
+
+
 @migrate_db.command("multi-goal")
 @click.option(
     "--db-path",
@@ -112,12 +131,7 @@ def migrate_db() -> None:
 )
 def migrate_multi_goal(source_path: Path, target_path: Path) -> None:
     """Convert a legacy single-goal database to the multi-goal schema."""
-    try:
-        report = migrate_database(source_path, target_path)
-    except (ValueError, sqlite3.Error) as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo(f"migrated {source_path} -> {target_path}")
-    click.echo(report.summary())
+    _run_migration_command(migrate_database, source_path, target_path)
 
 
 @migrate_db.command("intent-weight")
@@ -137,12 +151,7 @@ def migrate_multi_goal(source_path: Path, target_path: Path) -> None:
 )
 def migrate_intent_weight(source_path: Path, target_path: Path) -> None:
     """Add the intent weight column to a multi-goal database."""
-    try:
-        report = run_intent_weight_migration(source_path, target_path)
-    except (ValueError, sqlite3.Error) as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo(f"migrated {source_path} -> {target_path}")
-    click.echo(report.summary())
+    _run_migration_command(run_intent_weight_migration, source_path, target_path)
 
 
 @migrate_db.command("settings-heartbeat")
@@ -162,12 +171,7 @@ def migrate_intent_weight(source_path: Path, target_path: Path) -> None:
 )
 def migrate_settings_heartbeat(source_path: Path, target_path: Path) -> None:
     """Add the dispatcher heartbeat column to the settings table."""
-    try:
-        report = run_settings_heartbeat_migration(source_path, target_path)
-    except (ValueError, sqlite3.Error) as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo(f"migrated {source_path} -> {target_path}")
-    click.echo(report.summary())
+    _run_migration_command(run_settings_heartbeat_migration, source_path, target_path)
 
 
 @main.command()

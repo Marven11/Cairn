@@ -5,7 +5,7 @@ import pytest
 
 from cairn.server import db
 from cairn.server.app import create_app
-from conftest import TEST_AUTH, basic_headers, dispatcher_login
+from conftest import TEST_AUTH, basic_headers, bearer_headers, dispatcher_login
 
 
 @pytest.fixture
@@ -194,6 +194,183 @@ def test_boost_rejects_missing_and_concluded_intents(client: TestClient) -> None
         json={"worker": "reasoner", "description": "done"},
     ).status_code == 200
     assert client.post(f"/projects/{project_id}/intents/{intent_id}/boost").status_code == 409
+
+
+def test_disclaim_unclaims_claim_and_downvotes(client: TestClient) -> None:
+    project_id = _create_project(client)
+    intent_id = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "work", "creator": "reasoner", "worker": None},
+    ).json()["id"]
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/heartbeat",
+        json={"worker": "explorer"},
+    ).status_code == 200
+
+    response = client.post(
+        f"/projects/{project_id}/intents/{intent_id}/disclaim",
+        json={"downvote": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["worker"] is None
+    assert payload["weight"] == -1
+
+    heartbeat = client.post(
+        f"/projects/{project_id}/intents/{intent_id}/heartbeat",
+        json={"worker": "explorer"},
+    )
+    assert heartbeat.status_code == 200
+    assert heartbeat.json()["weight"] == -1
+    assert heartbeat.json()["reclaimed"] is True
+
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/heartbeat",
+        json={"worker": "explorer"},
+    ).json()["reclaimed"] is False
+
+
+def test_disclaim_without_downvote_keeps_weight(client: TestClient) -> None:
+    project_id = _create_project(client)
+    intent_id = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "work", "creator": "reasoner", "worker": None},
+    ).json()["id"]
+    client.post(
+        f"/projects/{project_id}/intents/{intent_id}/heartbeat",
+        json={"worker": "explorer"},
+    )
+
+    response = client.post(
+        f"/projects/{project_id}/intents/{intent_id}/disclaim",
+        json={"downvote": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["worker"] is None
+    assert response.json()["weight"] == 0
+
+
+def test_disclaim_rejects_missing_and_concluded_intents(client: TestClient) -> None:
+    project_id = _create_project(client)
+    assert client.post(
+        f"/projects/{project_id}/intents/i999/disclaim", json={"downvote": True}
+    ).status_code == 404
+
+    intent_id = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "scan", "creator": "reasoner", "worker": "reasoner"},
+    ).json()["id"]
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/conclude",
+        json={"worker": "reasoner", "description": "done"},
+    ).status_code == 200
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/disclaim", json={"downvote": True}
+    ).status_code == 409
+
+
+def test_prioritize_sets_intent_weight(client: TestClient) -> None:
+    project_id = _create_project(client)
+    intent_id = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "scan", "creator": "reasoner", "worker": None},
+    ).json()["id"]
+    client.post(f"/projects/{project_id}/intents/{intent_id}/boost")
+
+    response = client.post(
+        f"/projects/{project_id}/intents/{intent_id}/prioritize",
+        json={"weight": -3},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["weight"] == -3
+    assert client.get(f"/projects/{project_id}").json()["intents"][0]["weight"] == -3
+
+    assert client.post(
+        f"/projects/{project_id}/intents/i999/prioritize", json={"weight": 1}
+    ).status_code == 404
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/prioritize", json={"weight": "high"}
+    ).status_code == 422
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/prioritize", json={"weight": 10**30}
+    ).status_code == 422
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/prioritize", json={"weight": 2**53 + 1}
+    ).status_code == 422
+
+    boundary = client.post(
+        f"/projects/{project_id}/intents/{intent_id}/prioritize", json={"weight": 2**53}
+    )
+    assert boundary.status_code == 200
+    assert boundary.json()["weight"] == 2**53
+
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/disclaim", json={"downvote": True}
+    ).json()["weight"] == 2**53 - 1
+
+    exact = client.post(
+        f"/projects/{project_id}/intents/{intent_id}/prioritize",
+        json={"weight": "9007199254740991"},
+    )
+    assert exact.status_code == 200
+    assert exact.json()["weight"] == 9007199254740991
+
+
+def test_prioritize_rejects_concluded_intent(client: TestClient) -> None:
+    project_id = _create_project(client)
+    intent_id = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "scan", "creator": "reasoner", "worker": "reasoner"},
+    ).json()["id"]
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/conclude",
+        json={"worker": "reasoner", "description": "done"},
+    ).status_code == 200
+
+    assert client.post(
+        f"/projects/{project_id}/intents/{intent_id}/prioritize", json={"weight": 5}
+    ).status_code == 409
+
+
+def test_dispatcher_heartbeat_returns_unclaimed_facts(client: TestClient) -> None:
+    session = dispatcher_login(client)
+    project_id = _create_project(client)
+    assert client.put(
+        f"/runtime/projects/{project_id}/dispatcher",
+        json={"dispatcher_id": session["dispatcher_id"]},
+    ).status_code == 200
+    intent_id = client.post(
+        f"/projects/{project_id}/intents",
+        json={"from": ["origin"], "description": "work", "creator": "reasoner", "worker": None},
+    ).json()["id"]
+
+    beat = client.post("/runtime/dispatchers/heartbeat", headers=bearer_headers(session["token"]))
+    assert beat.status_code == 200
+    assert beat.json() == {
+        "status": "ok",
+        "unclaimed_intents": [
+            {"project_id": project_id, "intent_id": intent_id}
+        ],
+    }
+
+    client.post(
+        f"/projects/{project_id}/intents/{intent_id}/heartbeat",
+        json={"worker": "explorer"},
+    )
+    assert client.post(
+        "/runtime/dispatchers/heartbeat", headers=bearer_headers(session["token"])
+    ).json()["unclaimed_intents"] == []
+
+    client.post(f"/projects/{project_id}/intents/{intent_id}/disclaim", json={"downvote": True})
+
+    assert client.post(
+        "/runtime/dispatchers/heartbeat", headers=bearer_headers(session["token"])
+    ).json()["unclaimed_intents"] == [
+        {"project_id": project_id, "intent_id": intent_id}
+    ]
 
 
 def test_settings_and_export_are_backed_by_the_same_database(client: TestClient) -> None:

@@ -24,6 +24,8 @@ function cairnApp() {
     showHintModal: false,
     showAddGoalModal: false,
     showRenameModal: false,
+    showDisclaimModal: false,
+    showPrioritizeModal: false,
     showLocalPrefs: false,
     showSettings: false,
     showDispatchers: false,
@@ -35,6 +37,8 @@ function cairnApp() {
     newProject: { title: '', origin: '', goal: '', bootstrap: true, hints: [{ content: '' }] },
     intentForm: { description: '' },
     concludeForm: { description: '', intentId: '' },
+    disclaimForm: { intentId: '', downvote: true },
+    prioritizeForm: { intentId: '', weight: '' },
     completeForm: { description: '', goals: [] },
     hintForm: { content: '' },
     addGoalForm: { projectId: '', projectTitle: '', description: '', reopens: false },
@@ -2064,10 +2068,9 @@ function cairnApp() {
       return !intent.worker || intent.worker === actor ? intent : null;
     },
 
-    selectedReleasableOpenIntentRecord() {
+    selectedDisclaimableOpenIntentRecord() {
       const intent = this.selectedOpenIntentRecord();
-      if (!intent?.worker) return null;
-      return intent.worker === this.actorName() ? intent : null;
+      return intent?.worker ? intent : null;
     },
 
     selectedIntentPrimaryActionLabel() {
@@ -2573,15 +2576,44 @@ function cairnApp() {
       } catch(e) { this.showToast(e.message, 'error'); }
     },
 
-    async releaseSelectedIntent() {
-      const intent = this.selectedReleasableOpenIntentRecord();
-      if (!intent) return;
+    openDisclaim(intent) {
+      this.disclaimForm = { intentId: intent.id, downvote: true };
+      this.showDisclaimModal = true;
+    },
+
+    async disclaimIntent() {
+      const { intentId, downvote } = this.disclaimForm;
       try {
-        const actor = this.actorName();
-        await this.api('POST', `/projects/${this.selectedProjectId}/intents/${intent.id}/release`, { worker: actor });
+        await this.api('POST', `/projects/${this.selectedProjectId}/intents/${intentId}/disclaim`, {
+          downvote,
+        });
+        this.showDisclaimModal = false;
         await this.loadProject(this.selectedProjectId);
         this.updateGraph();
-        this.showToast('Intent released');
+        this.showToast('Intent disclaimed');
+      } catch(e) { this.showToast(e.message, 'error'); }
+    },
+
+    openPrioritize(intent) {
+      this.prioritizeForm = { intentId: intent.id, weight: String(intent.weight) };
+      this.showPrioritizeModal = true;
+      this.$nextTick(() => {
+        this.$refs.prioritizeWeightInput?.focus();
+        this.$refs.prioritizeWeightInput?.select?.();
+      });
+    },
+
+    async prioritizeIntent() {
+      const { intentId } = this.prioritizeForm;
+      const weight = String(this.prioritizeForm.weight).trim();
+      try {
+        await this.api('POST', `/projects/${this.selectedProjectId}/intents/${intentId}/prioritize`, {
+          weight,
+        });
+        this.showPrioritizeModal = false;
+        await this.loadProject(this.selectedProjectId);
+        this.updateGraph();
+        this.showToast('Intent weight updated');
       } catch(e) { this.showToast(e.message, 'error'); }
     },
 

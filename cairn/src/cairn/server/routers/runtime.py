@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -11,10 +12,12 @@ from cairn.server.auth import (
 )
 from cairn.server.db import get_conn
 from cairn.server.models import (
+    DispatcherHeartbeatResponse,
     DispatcherLoginRequest,
     DispatcherLoginResponse,
     DispatcherSummary,
     ProjectDispatcherResponse,
+    UnclaimedIntentFact,
     UpdateProjectDispatcherRequest,
 )
 from cairn.server.runtime import (
@@ -50,14 +53,36 @@ def login_dispatcher(request: Request, body: DispatcherLoginRequest, _: None = D
     )
 
 
-@router.post("/dispatchers/heartbeat")
+@router.post("/dispatchers/heartbeat", response_model=DispatcherHeartbeatResponse)
 def dispatcher_heartbeat(
     request: Request, dispatcher_id: Annotated[str, Depends(require_dispatcher)]
-) -> dict[str, str]:
+) -> DispatcherHeartbeatResponse:
     registry: DispatcherRegistry = request.app.state.dispatcher_registry
     if not registry.heartbeat(dispatcher_id):
         raise HTTPException(401, "dispatcher session expired; log in again")
-    return {"status": "ok"}
+    with get_conn(request) as conn:
+        assigned = registry.assigned_project_ids(dispatcher_id)
+        rows: list[sqlite3.Row] = []
+        if assigned:
+            placeholders = ",".join("?" for _ in assigned)
+            rows = conn.execute(
+                f"""
+                SELECT i.project_id, i.id
+                FROM intents i
+                JOIN projects p ON p.id = i.project_id
+                WHERE i.worker IS NULL AND i.concluded_at IS NULL
+                  AND p.status = 'active'
+                  AND i.project_id IN ({placeholders})
+                """,
+                assigned,
+            ).fetchall()
+    return DispatcherHeartbeatResponse(
+        status="ok",
+        unclaimed_intents=[
+            UnclaimedIntentFact(project_id=row["project_id"], intent_id=row["id"])
+            for row in rows
+        ],
+    )
 
 
 @router.get("/dispatchers", response_model=list[DispatcherSummary], dependencies=[Depends(require_user)])

@@ -212,6 +212,28 @@ class HeartbeatRequest(BaseModel):
         return text
 
 
+class HeartbeatResponse(Intent):
+    reclaimed: bool = False
+
+
+class UnclaimedIntentFact(BaseModel):
+    project_id: str
+    intent_id: str
+
+
+class DispatcherHeartbeatResponse(BaseModel):
+    status: Literal["ok"]
+    unclaimed_intents: list[UnclaimedIntentFact] = []
+
+
+class DisclaimRequest(BaseModel):
+    downvote: bool = True
+
+
+class PrioritizeRequest(BaseModel):
+    weight: int = Field(ge=-(2**53), le=2**53)
+
+
 class ReasonClaimRequest(BaseModel):
     worker: str
     trigger: str

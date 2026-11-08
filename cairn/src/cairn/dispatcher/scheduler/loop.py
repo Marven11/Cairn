@@ -10,6 +10,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 
 import requests
+from pydantic import TypeAdapter, ValidationError
 
 from cairn.dispatcher.config import DispatchConfig, LocalConfig, WorkerConfig
 from cairn.dispatcher.models import ReasonCheckpoint, RunningTask
@@ -32,11 +33,17 @@ from cairn.dispatcher.tasks.common import (
 )
 from cairn.dispatcher.tasks.explore import run_explore_task
 from cairn.dispatcher.tasks.reason import run_reason_task
-from cairn.server.models import Intent, ProjectDetail, ProjectSummary, is_goal_id
-
+from cairn.server.models import (
+    DispatcherHeartbeatResponse,
+    Intent,
+    ProjectDetail,
+    ProjectSummary,
+    is_goal_id,
+)
 LOG = logging.getLogger(__name__)
 UNHEALTHY_RETRY_AFTER_SECONDS = 5
 REJECTED_RETRY_AFTER_SECONDS = 5
+_DISPATCHER_HEARTBEAT_ADAPTER = TypeAdapter(DispatcherHeartbeatResponse)
 
 
 @dataclass(slots=True)
@@ -91,6 +98,7 @@ class DispatcherLoop:
         self.cleanup_futures: dict[Future[bool], tuple[str, str | None, str | None]] = {}
         self.reason_checkpoints: dict[str, ReasonCheckpoint] = {}
         self.runtime_project_ids: set[str] = set()
+        self._unclaimed_snapshots: set[tuple[str, str]] = set()
         self.worker_unhealthy_until: dict[str, float] = {}
         self.worker_rejected_until: dict[tuple[str, str, str], float] = {}
         self._log_state: dict[str, tuple[int, str, tuple[object, ...]]] = {}
@@ -218,8 +226,36 @@ class DispatcherLoop:
                         result.status_code,
                         result.text,
                     )
+                else:
+                    self._cancel_unclaimed_tasks(result.data)
             if self._heartbeat_stop.wait(auth.heartbeat_interval):
                 break
+
+    def _cancel_unclaimed_tasks(self, payload: object) -> None:
+        try:
+            response = _DISPATCHER_HEARTBEAT_ADAPTER.validate_python(payload)
+        except ValidationError:
+            LOG.warning("dispatcher heartbeat response shape unexpected; skip unclaimed cancellation")
+            self._unclaimed_snapshots = set()
+            return
+        unclaimed = {
+            (fact.project_id, fact.intent_id) for fact in response.unclaimed_intents
+        }
+        confirmed = self._unclaimed_snapshots & unclaimed
+        self._unclaimed_snapshots = unclaimed
+        for task in list(self.futures.values()):
+            if task.intent_id is None:
+                continue
+            if (task.project_id, task.intent_id) not in confirmed:
+                continue
+            if task.cancellation.cancel("unclaimed"):
+                LOG.info(
+                    "cancelling running task for unclaimed intent project=%s task=%s worker=%s intent=%s",
+                    task.project_id,
+                    task.task_type,
+                    task.worker_name,
+                    task.intent_id,
+                )
 
     def close(self) -> None:
         self._heartbeat_stop.set()

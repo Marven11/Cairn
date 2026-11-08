@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -71,6 +72,41 @@ def test_heartbeat_conflict_failure_kills_attached_process() -> None:
     assert lease.failure is not None
     assert lease.failure.status_code == 409
     assert process.kill_count == 1
+
+
+def test_heartbeat_reclaimed_response_kills_attached_process() -> None:
+    process = FakeProcess()
+    lease = HeartbeatLease(
+        lambda: ApiResult(200, data={"id": "i001", "weight": -1, "reclaimed": True}),
+        "intent",
+        "worker",
+        interval=60,
+    )
+    lease._interval = 0.01
+    lease.attach_process(process)
+
+    lease._run()
+
+    assert lease.failure is not None
+    assert process.kill_count == 1
+
+
+def test_heartbeat_plain_success_keeps_lease_alive() -> None:
+    process = FakeProcess()
+    lease = HeartbeatLease(
+        lambda: ApiResult(200, data={"id": "i001", "weight": 0, "reclaimed": False}),
+        "intent",
+        "worker",
+        interval=60,
+    )
+    lease._interval = 0.01
+    lease.attach_process(process)
+    lease.start()
+    time.sleep(0.1)
+    lease.stop()
+
+    assert lease.failure is None
+    assert process.kill_count == 0
 
 
 def test_conclude_fallback_accepts_halted_projects() -> None:

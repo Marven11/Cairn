@@ -93,6 +93,14 @@ class HeartbeatLease:
                 self._fail(exc.status_code, str(exc))
                 return
             if result.ok:
+                if isinstance(result.data, dict) and result.data.get("reclaimed"):
+                    LOG.warning(
+                        "intent claim was revoked by server; terminating scope=%s worker=%s",
+                        self._scope,
+                        self._worker_name,
+                    )
+                    self._fail(None, "intent claim was lost and got reclaimed")
+                    return
                 self._last_success_at = time.monotonic()
                 continue
             if result.status_code in (403, 409):

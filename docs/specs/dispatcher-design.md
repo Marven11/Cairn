@@ -568,7 +568,7 @@ if running_project_count < runtime.max_running_projects:
 
 1. 如果项目仍处于初始态，先按 `project.bootstrap_enabled` 和 Worker 能力决定路径：未开启或没有支持 `bootstrap` 的 Worker 时直接 `reason`，否则执行 `bootstrap`；若已经存在保留 bootstrap intent，则继续该阶段
 2. 如果满足“新态势”重触发条件，优先派发 `reason`
-3. 否则如果存在未认领 intent，派发 `explore`；被选中的 intent 先按 `weight` 从高到低，同权重再选最新创建的。`weight` 跨轮次累积保留：被 boost 过但尚未结论的 intent（包括认领超时回到未认领状态的）仍带着更高权重，会先于本轮新建的 weight 0 intent 被派发
+3. 否则如果存在未认领 intent，派发 `explore`；被选中的 intent 先按 `weight` 从高到低，同权重再选最新创建的。`weight` 跨轮次累积保留：被 boost 或 prioritize 提高过、但尚未结论的 intent（包括认领超时回到未认领状态的）仍带着更高权重，会先于本轮新建的 weight 0 intent 被派发；被 disclaim 的 intent 带 downvote 后的更低 weight 回到未认领池子，原持有者的 lease 心跳读到 `reclaimed: true` 后终止本地进程，Dispatcher 侧还会从 dispatcher heartbeat 响应的 `unclaimed_intents` 中发现本地对应任务已无主并直接 kill
 4. `reason` 的去重按“态势”做，而不是按总图变化做：首次只有在当前没有任何 open intent 时才触发；之后只有当前 Fact / Hint 数量增加，或项目从“存在 open intents”进入“没有 open intents”时，才重新触发
 5. 如果 `reason` 返回 `data.complete`，Dispatcher 调用 `POST /projects/{project_id}/complete`
 6. 如果 `reason` 没有返回 `data.complete` 且带 `intent`，Dispatcher 调用 `POST /projects/{project_id}/intents`

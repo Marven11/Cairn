@@ -6,7 +6,7 @@ from cairn.dispatcher.models import ReasonCheckpoint, RunningTask
 from cairn.dispatcher.runtime.cancellation import TaskCancellation
 from cairn.dispatcher.scheduler.loop import DispatcherLoop, _AuthSession
 from cairn.dispatcher.scheduler.worker_select import choose_worker
-from cairn.server.models import Fact, ProjectSummary
+from cairn.server.models import Fact, Intent, ProjectSummary
 
 from conftest import make_config, make_intent, make_project
 
@@ -16,6 +16,7 @@ def _loop() -> DispatcherLoop:
     loop._heartbeat_enabled = True
     loop.reason_checkpoints = {}
     loop.runtime_project_ids = set()
+    loop._unclaimed_snapshots = set()
     loop.cleanup_futures = {}
     loop._cleanup_pending = set()
     loop._inactive_cleanup_done = {}
@@ -298,6 +299,39 @@ def test_explore_prefers_higher_weight_intent_then_newest() -> None:
     dispatched.clear()
     assert loop._try_dispatch_project(_summary("proj_001", "active"))
     assert dispatched[0].id == "i002"
+
+
+def test_cancel_unclaimed_tasks_kills_matching_local_running_task() -> None:
+    loop = _loop()
+    loop.config = make_config()
+    cancelled = TaskCancellation()
+    still_claimed = TaskCancellation()
+    other_project = TaskCancellation()
+    loop.futures = {
+        Future(): RunningTask("proj_001", "explore", "test-worker", cancelled, intent_id="i001"),
+        Future(): RunningTask("proj_001", "explore", "test-worker", still_claimed, intent_id="i002"),
+        Future(): RunningTask("proj_002", "explore", "test-worker", other_project, intent_id="i001"),
+    }
+    snapshot = {
+        "status": "ok",
+        "unclaimed_intents": [
+            {"project_id": "proj_001", "intent_id": "i001"},
+            {"project_id": "proj_003", "intent_id": "i009"},
+        ],
+    }
+
+    loop._cancel_unclaimed_tasks(snapshot)
+    assert cancelled.reason is None
+
+    loop._cancel_unclaimed_tasks(snapshot)
+    assert cancelled.reason == "unclaimed"
+    assert still_claimed.reason is None
+    assert other_project.reason is None
+
+    loop._cancel_unclaimed_tasks({"status": "ok"})
+    loop._cancel_unclaimed_tasks(None)
+    assert still_claimed.reason is None
+    assert other_project.reason is None
 
 
 def test_cancel_inactive_tasks_marks_stopped_and_deleted_projects() -> None:

@@ -111,6 +111,14 @@ class DispatcherRegistry:
         with self._lock:
             return sorted(self._dispatchers.values(), key=lambda record: (record.connected_at, record.id))
 
+    def assigned_project_ids(self, dispatcher_id: str) -> list[str]:
+        with self._lock:
+            return [
+                project_id
+                for project_id, assigned in self._assignments.items()
+                if assigned == dispatcher_id
+            ]
+
     def assignment(self, project_id: str) -> DispatcherRecord | None:
         with self._lock:
             dispatcher_id = self._assignments.get(project_id)

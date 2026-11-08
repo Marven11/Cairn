@@ -594,10 +594,15 @@
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M3 12h3.5l2.75-6 3.5 12 2.75-7H21"/></svg>
             <span x-text="selectedIntentPrimaryActionLabel()"></span>
           </button>
-          <button @click="releaseSelectedIntent()" :disabled="!selectedReleasableOpenIntentRecord()"
-            class="px-3 py-1.5 bg-white/90 backdrop-blur border border-amber-200 text-amber-700 rounded-lg shadow-sm text-xs font-medium hover:bg-amber-50 transition disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1">
+          <button @click="selectedDisclaimableOpenIntentRecord() && openDisclaim(selectedDisclaimableOpenIntentRecord())" :disabled="!selectedDisclaimableOpenIntentRecord()"
+            class="px-3 py-1.5 bg-white/90 backdrop-blur border border-rose-200 text-rose-600 rounded-lg shadow-sm text-xs font-medium hover:bg-rose-50 transition disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1">
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 10V7.75A3.75 3.75 0 1 1 16.5 7"/><path d="M7.5 10.5h9A1.5 1.5 0 0 1 18 12v6A1.5 1.5 0 0 1 16.5 19.5h-9A1.5 1.5 0 0 1 6 18v-6A1.5 1.5 0 0 1 7.5 10.5Z"/><path d="M12 14.25v1.5"/></svg>
-            Release
+            Disclaim
+          </button>
+          <button @click="selectedOpenIntentRecord() && openPrioritize(selectedOpenIntentRecord())" :disabled="!selectedOpenIntentRecord()"
+            class="px-3 py-1.5 bg-white/90 backdrop-blur border border-sky-200 text-sky-600 rounded-lg shadow-sm text-xs font-medium hover:bg-sky-50 transition disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+            Prioritize
           </button>
           <button @click="selectedActionableOpenIntentRecord() && openConclude(selectedActionableOpenIntentRecord())" :disabled="!selectedActionableOpenIntentRecord()"
             class="px-3 py-1.5 bg-white/90 backdrop-blur border border-teal-200 text-teal-600 rounded-lg shadow-sm text-xs font-medium hover:bg-teal-50 transition disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1">
@@ -733,6 +738,7 @@
                 <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">To</span><span class="font-mono text-slate-600 text-right break-all" x-text="selectedIntentRecord().to && selectedIntentRecord().to.length ? selectedIntentRecord().to.join(', ') : '—'"></span></div>
                 <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Creator</span><span class="text-slate-600 text-right break-all" x-text="selectedIntentRecord().creator"></span></div>
                 <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Worker</span><span class="text-slate-600 text-right break-all" x-text="selectedIntentRecord().worker || '—'"></span></div>
+                <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Weight</span><span class="font-mono text-slate-600 text-right break-words" x-text="selectedIntentRecord().weight"></span></div>
                 <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Heartbeat</span><span class="text-slate-600 text-right break-words" x-text="selectedIntentRecord().last_heartbeat_at ? formatTime(selectedIntentRecord().last_heartbeat_at) : '—'"></span></div>
                 <div class="flex items-start justify-between gap-3"><span class="text-slate-400 shrink-0">Created</span><span class="text-slate-600 text-right break-words" x-text="formatTime(selectedIntentRecord().created_at)"></span></div>
                 <template x-if="selectedIntentRecord().concluded_at">
@@ -909,6 +915,53 @@
       <button @click="showConcludeModal = false" class="px-4 py-2 text-sm text-slate-500 hover:bg-slate-50 rounded-xl transition">Cancel</button>
       <button @click="concludeIntent()" :disabled="!concludeForm.description"
         class="px-5 py-2 text-sm bg-teal-500 text-white rounded-xl font-medium hover:bg-teal-600 transition disabled:opacity-30 shadow-sm shadow-teal-200">Conclude</button>
+    </div>
+  </div>
+</div>
+
+<!-- Disclaim Intent -->
+<div x-show="showDisclaimModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center overlay" @click.self="showDisclaimModal = false">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-200/60" @click.stop>
+    <div class="flex items-start gap-3">
+      <div class="w-10 h-10 rounded-2xl bg-rose-50 text-rose-500 flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path d="M9 10V7.75A3.75 3.75 0 1 1 16.5 7"/><path d="M7.5 10.5h9A1.5 1.5 0 0 1 18 12v6A1.5 1.5 0 0 1 16.5 19.5h-9A1.5 1.5 0 0 1 6 18v-6A1.5 1.5 0 0 1 7.5 10.5Z"/><path d="M12 14.25v1.5"/></svg>
+      </div>
+      <div class="min-w-0 flex-1">
+        <h3 class="text-base font-semibold text-slate-700">Disclaim Intent</h3>
+        <p class="text-xs text-slate-400 mt-0.5 font-mono" x-text="disclaimForm.intentId"></p>
+      </div>
+    </div>
+    <p class="text-sm text-slate-500 mt-3 leading-relaxed">
+      Stop the worker currently executing this intent: its own next heartbeat reports the revoked claim and its process is killed, so the intent becomes unclaimed again.
+    </p>
+    <label class="flex items-center gap-2 px-3 py-2.5 mt-3 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-600 cursor-pointer">
+      <input type="checkbox" x-model="disclaimForm.downvote" class="h-4 w-4 rounded border-slate-300 text-rose-500 focus:ring-rose-200">
+      <span>Also downvote this intent (weight −1)</span>
+    </label>
+    <div class="flex justify-end gap-2 mt-5">
+      <button @click="showDisclaimModal = false" class="px-4 py-2 text-sm text-slate-500 hover:bg-slate-50 rounded-xl transition">Cancel</button>
+      <button @click="disclaimIntent()"
+        class="px-5 py-2 text-sm bg-rose-500 text-white rounded-xl font-medium hover:bg-rose-600 transition shadow-sm shadow-rose-200">Disclaim</button>
+    </div>
+  </div>
+</div>
+
+<!-- Prioritize Intent -->
+<div x-show="showPrioritizeModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center overlay" @click.self="showPrioritizeModal = false">
+  <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-200/60" @click.stop>
+    <h3 class="text-base font-semibold text-slate-700 mb-1">Prioritize Intent</h3>
+    <p class="text-xs text-slate-400 mb-4 font-mono" x-text="prioritizeForm.intentId"></p>
+    <div class="space-y-3">
+      <div>
+        <label class="text-[11px] text-slate-400 mb-1 block font-medium">Weight</label>
+        <input x-ref="prioritizeWeightInput" type="number" step="1" x-model="prioritizeForm.weight" class="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-400 transition">
+      </div>
+      <p class="text-[11px] text-slate-400">Higher weight means the intent gets explored first once unclaimed.</p>
+    </div>
+    <div class="flex justify-end gap-2 mt-5">
+      <button @click="showPrioritizeModal = false" class="px-4 py-2 text-sm text-slate-500 hover:bg-slate-50 rounded-xl transition">Cancel</button>
+      <button @click="prioritizeIntent()"
+        class="px-5 py-2 text-sm bg-sky-500 text-white rounded-xl font-medium hover:bg-sky-600 transition shadow-sm shadow-sky-200">Set Weight</button>
     </div>
   </div>
 </div>

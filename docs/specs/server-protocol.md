@@ -142,7 +142,7 @@ worker          # 执行者标识，语义随状态变化（见下方说明）
 last_heartbeat_at  # 最后一次心跳时间，仅尚无结论时有意义，永久保留，不清空
 created_at
 concluded_at    # 结论时间，null 表示尚无结论
-weight           # 调度权重，越大越先被派发；创建时为 0，由 boost 加一
+weight           # 调度权重，越大越先被派发；创建时为 0，由 boost 加一，可由 prioritize 直接设置
 ```
 
 `creator` 在创建时写入，标识谁洞察局势提出了这个探索方向，不可变。`worker` 可为空；若创建时同时认领，则 `worker` 必须等于 `creator`，并写入首个 `last_heartbeat_at`。
@@ -174,7 +174,7 @@ created_at
 ### Settings
 
 ```
-intent_timeout  # 单位秒，超过此时间无心跳则 worker 清空为 null
+intent_timeout  # 单位秒，超过此时间无心跳则 worker 清空为 null；必须大于每个 dispatcher 的 runtime.interval（dispatcher 启动时校验），运行期调小会让正常续约被判超时，claim 撤销的事实也随之无法投递
 reason_timeout  # 单位秒，超过此时间无心跳则 Project.reason 清空为 null
 dispatcher_heartbeat_timeout  # 单位秒，超过此时间无心跳则 dispatcher 实例被判定为 offline（见 Runtime Dispatcher）；变更只影响之后的登录
 ```
@@ -217,7 +217,18 @@ Dispatcher 实例与项目指派只存在于内存，不写入数据库；接口
 
 #### POST /runtime/dispatchers/heartbeat
 
-Bearer dispatcher token；刷新自身在线状态。`dispatcher_heartbeat_timeout` 过期未心跳即被判定 offline，其指派的项目显示为 `halted`。
+Bearer dispatcher token；刷新自身在线状态。`dispatcher_heartbeat_timeout` 过期未心跳即被判定 offline，其指派的项目显示为 `halted`。响应携带 unclaimed 事实——该 dispatcher 被指派的 `active` 项目中全部尚无结论且未被 claimed 的 intent，dispatcher 发现本地对应任务即终止它：
+
+```json
+{
+  "status": "ok",
+  "unclaimed_intents": [
+    {"project_id": "proj_001", "intent_id": "i002"}
+  ]
+}
+```
+
+intent 被认领或结论后从响应中消失。
 
 #### GET /runtime/dispatchers
 
@@ -617,6 +628,8 @@ Body：
 
 消费者上报存活，更新 `worker` 和 `last_heartbeat_at`。仅对尚无结论的 Intent 有效。该接口用于续约，或在某条 Intent 已超时变为未认领后重新接手。若当前 `worker` 为 `null`，任意消费者可通过 heartbeat 认领；若当前 `worker` 已被其他消费者占用且未超时，返回 409。Heartbeat 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
 
+响应是 Intent 对象并附加 `reclaimed` 字段：本次心跳之前该 Intent 已变为未认领、且其最后一次续约仍在 `intent_timeout` 之内（即 claim 被主动撤销，如 disclaim）时为 `true`，此时续约中的持有者应终止本地推进；claim 因超时被清理后的重新接手返回 `false`，按正常续约继续；通过本接口认领无主 Intent 的请求返回 `true` 属于正常认领语义，派发方无需处理。
+
 消费者通常会按固定心跳周期继续 heartbeat 或轮询项目；项目进入 `stopped` 或 `completed` 后，继续 heartbeat 会返回 403，而轮询读取会看到项目 `status` 变化。由于 Server 在 `stopped` 时会立即清空 open intent 的 `worker`，消费者应把它当作硬停止信号，尽快终止本地推进，而不是继续依赖旧 claim。
 
 Body：
@@ -645,9 +658,41 @@ Body：
 
 ---
 
+#### POST /projects/{project_id}/intents/{intent_id}/disclaim
+
+把一条尚无结论的 Intent 强制退回未认领状态：当前 `worker` 清空为 null，`last_heartbeat_at` 保留。终止通过两条通道完成：原持有者的下一次 intent 心跳会收到 `reclaimed: true`（见 heartbeat 小节）并终止本地进程，通常在 `runtime.interval` 内生效；同时该事实进入 dispatcher 心跳响应的 unclaimed 清单，dispatcher 终止本地对应任务。`downvote`（默认 `true`）同时把 `weight` 减一，让该 Intent 在之后的派发中排到后面。若该 Intent 已有结论，返回 409。Disclaim 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
+
+Body：
+
+```json
+{
+  "downvote": true
+}
+```
+
+响应：更新后的 Intent 对象。
+
+---
+
 #### POST /projects/{project_id}/intents/{intent_id}/boost
 
 把一条尚无结论的 Intent 的 `weight` 加一。消费者用它落实 `reason` 输出的 `recommended_next`：权重更高的 Intent 会先被派发。若该 Intent 已有结论，返回 409。Boost 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
+
+响应：更新后的 Intent 对象。
+
+---
+
+#### POST /projects/{project_id}/intents/{intent_id}/prioritize
+
+把一条尚无结论的 Intent 的 `weight` 直接设置为请求体给定值，取 [-2^53, 2^53] 内的整数；整数亦可写作数字字符串或整值浮点，按 pydantic 默认解析规则接受，超界或无法解析返回 422。若该 Intent 已有结论，返回 409。Prioritize 属于探索写操作，仅 `active` 项目允许；`stopped` 或 `completed` 返回 403。
+
+Body：
+
+```json
+{
+  "weight": 2
+}
+```
 
 响应：更新后的 Intent 对象。
 

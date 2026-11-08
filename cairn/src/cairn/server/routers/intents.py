@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, HTTPException, Request
 
 from cairn.server.db import get_conn
@@ -5,14 +9,18 @@ from cairn.server.models import (
     ConcludeRequest,
     ConcludeResponse,
     CreateIntentRequest,
+    DisclaimRequest,
     Fact,
     HeartbeatRequest,
+    HeartbeatResponse,
     Intent,
+    PrioritizeRequest,
 )
 from cairn.server.services import (
     check_project_active,
     get_claimable_open_intent_or_404,
     get_intent_or_404,
+    get_intent_timeout,
     get_releasable_open_intent_or_404,
     intent_to_model,
     next_fact_id,
@@ -93,13 +101,65 @@ def boost_intent(request: Request, project_id: str, intent_id: str):
 
 
 @router.post(
-    "/projects/{project_id}/intents/{intent_id}/heartbeat",
+    "/projects/{project_id}/intents/{intent_id}/disclaim",
     response_model=Intent,
+)
+def disclaim(request: Request, project_id: str, intent_id: str, body: DisclaimRequest):
+    with get_conn(request) as conn:
+        check_project_active(conn, project_id)
+        row = get_intent_or_404(conn, project_id, intent_id)
+        if row["concluded_at"] is not None:
+            raise HTTPException(409, "Intent already concluded")
+        conn.execute(
+            "UPDATE intents SET worker = NULL WHERE id = ? AND project_id = ?",
+            (intent_id, project_id),
+        )
+        if body.downvote:
+            conn.execute(
+                "UPDATE intents SET weight = weight - 1 WHERE id = ? AND project_id = ?",
+                (intent_id, project_id),
+            )
+        updated = conn.execute(
+            "SELECT * FROM intents WHERE id = ? AND project_id = ?",
+            (intent_id, project_id),
+        ).fetchone()
+        return intent_to_model(conn, updated, project_id)
+
+
+@router.post(
+    "/projects/{project_id}/intents/{intent_id}/prioritize",
+    response_model=Intent,
+)
+def prioritize(request: Request, project_id: str, intent_id: str, body: PrioritizeRequest):
+    with get_conn(request) as conn:
+        check_project_active(conn, project_id)
+        row = get_intent_or_404(conn, project_id, intent_id)
+        if row["concluded_at"] is not None:
+            raise HTTPException(409, "Intent already concluded")
+        conn.execute(
+            "UPDATE intents SET weight = ? WHERE id = ? AND project_id = ?",
+            (body.weight, intent_id, project_id),
+        )
+        updated = conn.execute(
+            "SELECT * FROM intents WHERE id = ? AND project_id = ?",
+            (intent_id, project_id),
+        ).fetchone()
+        return intent_to_model(conn, updated, project_id)
+
+
+@router.post(
+    "/projects/{project_id}/intents/{intent_id}/heartbeat",
+    response_model=HeartbeatResponse,
 )
 def heartbeat(request: Request, project_id: str, intent_id: str, body: HeartbeatRequest):
     with get_conn(request) as conn:
         check_project_active(conn, project_id)
-        get_claimable_open_intent_or_404(conn, project_id, intent_id, body.worker)
+        row = get_claimable_open_intent_or_404(conn, project_id, intent_id, body.worker)
+        reclaimed = False
+        if row["worker"] is None and row["last_heartbeat_at"] is not None:
+            last = datetime.fromisoformat(row["last_heartbeat_at"].replace("Z", "+00:00"))
+            elapsed = (datetime.now(UTC) - last).total_seconds()
+            reclaimed = elapsed <= get_intent_timeout(conn)
 
         now = utcnow()
         conn.execute(
@@ -111,7 +171,8 @@ def heartbeat(request: Request, project_id: str, intent_id: str, body: Heartbeat
             "SELECT * FROM intents WHERE id = ? AND project_id = ?",
             (intent_id, project_id),
         ).fetchone()
-        return intent_to_model(conn, updated, project_id)
+        model = intent_to_model(conn, updated, project_id)
+        return HeartbeatResponse(**model.model_dump(), reclaimed=reclaimed)
 
 
 @router.post(
